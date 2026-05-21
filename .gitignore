@@ -1,0 +1,25 @@
+# Environment
+.env
+
+# ChromaDB — regenerated on first run
+chroma_db/
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.Python
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+env/
+
+# User data — personal recipes and chat history
+data/user_recipes.json
+data/chat_history.json
+
+# OS
+.DS_Store
+Thumbs.db
