@@ -67,6 +67,39 @@ def _build_where_filter(request: RecommendationRequest) -> dict | None:
     return conditions[0] if len(conditions) == 1 else {"$and": conditions}
 
 
+_MEAT_INGREDIENTS: frozenset[str] = frozenset({
+    # Poultry
+    "chicken", "turkey", "duck", "goose", "quail", "hen", "murgh",
+    # Red meat
+    "beef", "pork", "lamb", "mutton", "veal", "venison", "bison", "rabbit", "goat",
+    "keema", "kheema", "gosht", "mince",
+    # Processed
+    "bacon", "ham", "sausage", "pepperoni", "salami", "chorizo", "prosciutto",
+    "steak", "ribs", "lard",
+    # Seafood
+    "fish", "salmon", "tuna", "cod", "tilapia", "halibut", "bass", "trout",
+    "shrimp", "prawn", "crab", "lobster", "clam", "oyster", "mussel",
+    "squid", "octopus", "anchovy", "sardine", "mackerel", "herring",
+    "machi", "machli", "jhinga",
+})
+
+_VEG_TAGS: frozenset[str] = frozenset({"vegetarian", "vegan"})
+
+
+def _user_wants_meat(ingredients: list[str]) -> bool:
+    """Return True if any ingredient is a meat, poultry, or seafood product."""
+    for ing in ingredients:
+        tokens = {w.strip(".,()").lower() for w in ing.split()}
+        if tokens & _MEAT_INGREDIENTS:
+            return True
+    return False
+
+
+def _recipe_is_vegetarian_or_vegan(dietary_tags_str: str) -> bool:
+    tags = {t.strip().lower() for t in dietary_tags_str.split(",") if t.strip()}
+    return bool(tags & _VEG_TAGS)
+
+
 def _passes_dietary_filter(recipe_dietary_tags: str, required: list[str]) -> bool:
     if not required:
         return True
@@ -127,6 +160,7 @@ def retrieve_recipes(request: RecommendationRequest) -> list[RetrievedRecipe]:
     results = collection.query(**query_kwargs)
 
     all_recipes = _load_all_recipes()
+    wants_meat = _user_wants_meat(request.available_ingredients)
 
     retrieved: list[RetrievedRecipe] = []
     for recipe_id, distance, metadata, document in zip(
@@ -138,6 +172,10 @@ def retrieve_recipes(request: RecommendationRequest) -> list[RetrievedRecipe]:
         if not _passes_dietary_filter(
             metadata.get("dietary_tags", ""), request.dietary_preferences
         ):
+            continue
+
+        # Meat intent filter: exclude vegetarian/vegan recipes when user listed meat
+        if wants_meat and _recipe_is_vegetarian_or_vegan(metadata.get("dietary_tags", "")):
             continue
 
         # Course post-filter

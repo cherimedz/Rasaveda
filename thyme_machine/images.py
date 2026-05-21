@@ -84,9 +84,58 @@ def _query_mealdb(term: str) -> tuple[str | None, str]:
     return None, ""
 
 
-def _query_wikipedia(name: str) -> tuple[str | None, str]:
-    """Two-step Wikipedia lookup: opensearch → pageimages.
+_REGIONAL_PREFIXES = re.compile(
+    r"^\s*(north|south|east|west|central|indo|punjabi|bengali|keralan|gujarati|"
+    r"rajasthani|mughlai|hyderabadi|goan|chettinad|maharashtrian|kashmiri)\s+",
+    re.IGNORECASE,
+)
 
+
+def _alt_search_terms(name: str, cuisine: str) -> list[str]:
+    """Generate fallback search terms when the exact recipe name fails."""
+    terms = []
+    cleaned = _REGIONAL_PREFIXES.sub("", _clean_search_term(name)).strip()
+    if cleaned and cleaned.lower() != name.lower():
+        terms.append(cleaned)
+    # First substantial word alone (e.g. "Rogan Josh" → "Rogan Josh" is already clean,
+    # but "Murgh Malai Kebab" → "Kebab" is a useful fallback)
+    words = [w for w in cleaned.split() if len(w) >= 4]
+    if len(words) >= 2:
+        terms.append(words[-1])  # last main word (often the dish type)
+    if cuisine:
+        terms.append(f"{cleaned} {cuisine}")
+    return [t for t in terms if t.strip()]
+
+
+def _wiki_fetch_image_for_title(title: str) -> str | None:
+    """Fetch the thumbnail URL for a known Wikipedia article title."""
+    try:
+        p = requests.get(
+            "https://en.wikipedia.org/w/api.php",
+            params={
+                "action": "query",
+                "titles": title,
+                "prop": "pageimages",
+                "pithumbsize": 640,
+                "format": "json",
+                "redirects": 1,
+            },
+            timeout=6,
+            headers=_WIKI_HEADERS,
+        )
+        for pid, page in p.json().get("query", {}).get("pages", {}).items():
+            if pid != "-1":
+                return page.get("thumbnail", {}).get("source")
+    except Exception:
+        pass
+    return None
+
+
+def _query_wikipedia(name: str) -> tuple[str | None, str]:
+    """Two-step Wikipedia lookup: opensearch (top 3) → pageimages.
+
+    Checks up to 3 candidate titles so niche dish names that aren't the
+    top opensearch hit still get matched.
     Returns (thumbnail_url, article_title) or (None, '').
     """
     search_term = _clean_search_term(name)
@@ -98,7 +147,7 @@ def _query_wikipedia(name: str) -> tuple[str | None, str]:
                 params={
                     "action": "opensearch",
                     "search": search_term,
-                    "limit": 1,
+                    "limit": 3,
                     "format": "json",
                     "redirects": "resolve",
                 },
@@ -110,27 +159,16 @@ def _query_wikipedia(name: str) -> tuple[str | None, str]:
             if not titles:
                 return None, ""
 
-            title = titles[0]
             time.sleep(0.4)
 
-            p = requests.get(
-                "https://en.wikipedia.org/w/api.php",
-                params={
-                    "action": "query",
-                    "titles": title,
-                    "prop": "pageimages",
-                    "pithumbsize": 640,
-                    "format": "json",
-                    "redirects": 1,
-                },
-                timeout=6,
-                headers=_WIKI_HEADERS,
-            )
-            for pid, page in p.json().get("query", {}).get("pages", {}).items():
-                if pid != "-1":
-                    img = page.get("thumbnail", {}).get("source")
-                    return (img, page.get("title", title)) if img else (None, title)
-            return None, ""
+            for title in titles:
+                if not _wiki_related(name, title):
+                    continue
+                img = _wiki_fetch_image_for_title(title)
+                if img:
+                    return img, title
+
+            return None, titles[0] if titles else ""
 
         except Exception:
             if attempt == 0:
@@ -180,30 +218,40 @@ def _wiki_related(query: str, wiki_title: str) -> bool:
 def get_recipe_image(name: str, cuisine: str = "") -> str | None:
     """Return an image URL for a recipe, or None to fall back to the CSS gradient.
 
-    Checks in-memory + disk cache first, then tries TheMealDB (fast, best for
-    Western/popular dishes), then Wikipedia (broader coverage for Indian and world
-    cuisines), then returns None.
+    Priority:
+      1. In-memory / disk cache
+      2. TheMealDB  (exact Jaccard match)
+      3. Wikipedia  (top-3 candidate titles, relevance-checked)
+      4. Wikipedia retry with alternative/simplified search terms
+    None is stored in-memory only so transient API failures don't persist.
     """
     key = name.lower().strip()
     if key in _mem_cache:
         return _mem_cache[key]
 
-    # 1. TheMealDB (fast, reliable for popular dishes)
+    # 1. TheMealDB
     img, matched = _query_mealdb(name)
     if img and _jaccard(name, matched) >= _MEALDB_THRESHOLD:
         _mem_cache[key] = img
-        _flush_disk_cache()  # persist success to disk
+        _flush_disk_cache()
         return img
 
-    # 2. Wikipedia fallback
+    # 2. Wikipedia — exact name, checks top-3 results
     time.sleep(0.35)
     wiki_img, wiki_title = _query_wikipedia(name)
-    if wiki_img and _wiki_related(name, wiki_title):
+    if wiki_img:
         _mem_cache[key] = wiki_img
         _flush_disk_cache()
         return wiki_img
 
-    # 3. CSS gradient — store None in memory only (not disk) so transient API
-    # failures don't permanently prevent an image from being found in future sessions.
+    # 3. Wikipedia retry with alternative search terms (strip regional prefixes, etc.)
+    for alt_term in _alt_search_terms(name, cuisine):
+        time.sleep(0.35)
+        wiki_img, wiki_title = _query_wikipedia(alt_term)
+        if wiki_img and _wiki_related(name, wiki_title):
+            _mem_cache[key] = wiki_img
+            _flush_disk_cache()
+            return wiki_img
+
     _mem_cache[key] = None
     return None

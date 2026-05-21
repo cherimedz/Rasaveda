@@ -662,7 +662,14 @@ def _recipe_card(rec, rank: int):
     thumb_html = (
         f'<img src="{img_url}" class="rec-img" alt="{_safe_html(r.name)}">'
         if img_url
-        else f'<div class="rec-thumb" style="background:{thumb};height:14px;"></div>'
+        else (
+            f'<div style="background:{thumb};height:240px;display:flex;'
+            f'align-items:center;justify-content:center;">'
+            f'<span style="color:rgba(255,255,255,0.92);font-size:1.15rem;font-weight:800;'
+            f'text-shadow:0 2px 10px rgba(0,0,0,0.55);padding:1rem;text-align:center;'
+            f'letter-spacing:.02em;">{_safe_html(r.name)}</span>'
+            f'</div>'
+        )
     )
 
     # Escape all LLM-generated text — newlines inside an HTML block break Streamlit's renderer
