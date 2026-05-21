@@ -170,4 +170,4 @@ typer>=0.12.0
 
 ## License
 
-MIT
+Apache License 2.0
