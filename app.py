@@ -1041,7 +1041,7 @@ def _crop_dialog(img_bytes: bytes, target_key: str):
         if st.button("Reset all", key=f"{pk}_reset", use_container_width=True):
             for sfx in ("rot", "zoom", "fh", "fv", "aspect", "ox", "oy", "init"):
                 st.session_state.pop(f"{pk}_{sfx}", None)
-            st.rerun()
+            st.rerun(scope="fragment")  # stay in dialog, re-seed defaults
 
     with prev:
         result = _apply_photo_edits(orig, rotate, zoom, flip_h, flip_v, aspect, ox, oy)
@@ -1049,23 +1049,34 @@ def _crop_dialog(img_bytes: bytes, target_key: str):
         st.image(result, caption=f"Preview — {rw} × {rh} px", use_container_width=True)
 
     st.divider()
-    ok_col, cancel_col = st.columns(2)
+    save_col, dl_col, cancel_col = st.columns(3)
 
     def _cleanup():
         for sfx in ("rot", "zoom", "fh", "fv", "aspect", "ox", "oy", "init"):
             st.session_state.pop(f"{pk}_{sfx}", None)
 
-    with ok_col:
-        if st.button("Use this photo", type="primary", use_container_width=True):
-            buf = io.BytesIO()
-            result.save(buf, format="JPEG", quality=88)
-            st.session_state[target_key] = buf.getvalue()
+    # Build JPEG once for both action buttons
+    _buf = io.BytesIO()
+    result.save(_buf, format="JPEG", quality=88)
+    _jpg = _buf.getvalue()
+
+    with save_col:
+        if st.button("Save to Recipe", type="primary", use_container_width=True):
+            st.session_state[target_key] = _jpg
             _cleanup()
-            st.rerun()
+            st.rerun(scope="app")  # close dialog, commit to main app
+    with dl_col:
+        st.download_button(
+            "Download image",
+            data=_jpg,
+            file_name="recipe_photo.jpg",
+            mime="image/jpeg",
+            use_container_width=True,
+        )
     with cancel_col:
         if st.button("Cancel", use_container_width=True):
             _cleanup()
-            st.rerun()
+            st.rerun(scope="app")  # close dialog without saving
 
 
 def _image_uploader_section():
