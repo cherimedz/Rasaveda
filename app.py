@@ -940,36 +940,131 @@ def _init_form_state():
             st.session_state[k] = v
 
 
-@st.dialog("Crop Your Photo", width="large")
+def _apply_photo_edits(
+    img: Image.Image,
+    rotate: int,
+    zoom: int,
+    flip_h: bool,
+    flip_v: bool,
+    aspect: str,
+    offset_x: int,
+    offset_y: int,
+) -> Image.Image:
+    """Apply rotate / zoom / flip / crop to a PIL Image and return the result."""
+    from PIL import ImageOps
+
+    # 1. Rotate — positive slider value = clockwise
+    if rotate != 0:
+        img = img.rotate(-rotate, expand=True, resample=Image.Resampling.BICUBIC,
+                         fillcolor=(255, 255, 255))
+
+    # 2. Flip
+    if flip_h:
+        img = ImageOps.mirror(img)
+    if flip_v:
+        img = ImageOps.flip(img)
+
+    # 3. Zoom crop with position offset
+    zoom_f = zoom / 100.0
+    w, h = img.size
+    crop_w = max(1, int(w / zoom_f))
+    crop_h = max(1, int(h / zoom_f))
+    max_left = w - crop_w
+    max_top  = h - crop_h
+    left = int(max_left * offset_x / 100)
+    top  = int(max_top  * offset_y / 100)
+    img = img.crop((left, top, left + crop_w, top + crop_h))
+
+    # 4. Aspect ratio crop (centered within the zoom crop)
+    ratio_map = {"4:3": 4 / 3, "16:9": 16 / 9, "1:1": 1.0, "3:4 Portrait": 3 / 4}
+    if aspect in ratio_map:
+        target_ratio = ratio_map[aspect]
+        w, h = img.size
+        current_ratio = w / h
+        if current_ratio > target_ratio:
+            new_w = int(h * target_ratio)
+            margin = (w - new_w) // 2
+            img = img.crop((margin, 0, margin + new_w, h))
+        elif current_ratio < target_ratio:
+            new_h = int(w / target_ratio)
+            margin = (h - new_h) // 2
+            img = img.crop((0, margin, w, margin + new_h))
+
+    # 5. Cap longest side at 800 px for preview / storage
+    w, h = img.size
+    if max(w, h) > 800:
+        scale = 800 / max(w, h)
+        img = img.resize((int(w * scale), int(h * scale)), Image.Resampling.LANCZOS)
+
+    return img
+
+
+@st.dialog("Edit Your Photo", width="large")
 def _crop_dialog(img_bytes: bytes, target_key: str):
-    """Modal crop dialog. Writes result to session_state[target_key] and closes."""
-    from streamlit_cropper import st_cropper
-    pil_img = Image.open(io.BytesIO(img_bytes)).convert("RGB")
+    """PIL-based image editor modal — rotate, zoom, flip, aspect ratio, pan."""
+    pk = f"_ed_{target_key}"
 
-    st.caption("Drag the orange handles to frame your shot, then confirm.")
-    left, right = st.columns([3, 2])
-    with left:
-        cropped = st_cropper(
-            pil_img,
-            realtime_update=True,
-            box_color="#FF9933",
-            aspect_ratio=(4, 3),
+    # Seed defaults the first time this dialog opens
+    if f"{pk}_init" not in st.session_state:
+        st.session_state[f"{pk}_rot"]    = 0
+        st.session_state[f"{pk}_zoom"]   = 100
+        st.session_state[f"{pk}_fh"]     = False
+        st.session_state[f"{pk}_fv"]     = False
+        st.session_state[f"{pk}_aspect"] = "4:3"
+        st.session_state[f"{pk}_ox"]     = 50
+        st.session_state[f"{pk}_oy"]     = 50
+        st.session_state[f"{pk}_init"]   = True
+
+    orig = Image.open(io.BytesIO(img_bytes)).convert("RGB")
+
+    ctrl, prev = st.columns([2, 3])
+
+    with ctrl:
+        st.caption("Transform")
+        rotate = st.slider("Rotate °",  -180, 180, step=1, key=f"{pk}_rot")
+        zoom   = st.slider("Zoom %",      50, 300, step=5, key=f"{pk}_zoom")
+        aspect = st.selectbox(
+            "Aspect Ratio",
+            ["4:3", "16:9", "1:1", "3:4 Portrait", "Free"],
+            key=f"{pk}_aspect",
         )
-    with right:
-        st.markdown("**Preview**")
-        st.image(cropped, use_container_width=True)
-        st.caption("4 : 3 ratio")
-
-    st.markdown("---")
-    col_ok, col_cancel = st.columns(2)
-    with col_ok:
-        if st.button("Use this crop", type="primary", use_container_width=True):
-            buf = io.BytesIO()
-            cropped.save(buf, format="JPEG", quality=88)
-            st.session_state[target_key] = buf.getvalue()
+        fc1, fc2 = st.columns(2)
+        with fc1:
+            flip_h = st.checkbox("Flip H", key=f"{pk}_fh")
+        with fc2:
+            flip_v = st.checkbox("Flip V", key=f"{pk}_fv")
+        st.caption("Pan (move crop window when zoomed in)")
+        ox = st.slider("Horizontal", 0, 100, step=1, key=f"{pk}_ox",
+                       help="Shift crop window left / right")
+        oy = st.slider("Vertical",   0, 100, step=1, key=f"{pk}_oy",
+                       help="Shift crop window up / down")
+        if st.button("Reset all", key=f"{pk}_reset", use_container_width=True):
+            for sfx in ("rot", "zoom", "fh", "fv", "aspect", "ox", "oy", "init"):
+                st.session_state.pop(f"{pk}_{sfx}", None)
             st.rerun()
-    with col_cancel:
+
+    with prev:
+        result = _apply_photo_edits(orig, rotate, zoom, flip_h, flip_v, aspect, ox, oy)
+        rw, rh = result.size
+        st.image(result, caption=f"Preview — {rw} × {rh} px", use_container_width=True)
+
+    st.divider()
+    ok_col, cancel_col = st.columns(2)
+
+    def _cleanup():
+        for sfx in ("rot", "zoom", "fh", "fv", "aspect", "ox", "oy", "init"):
+            st.session_state.pop(f"{pk}_{sfx}", None)
+
+    with ok_col:
+        if st.button("Use this photo", type="primary", use_container_width=True):
+            buf = io.BytesIO()
+            result.save(buf, format="JPEG", quality=88)
+            st.session_state[target_key] = buf.getvalue()
+            _cleanup()
+            st.rerun()
+    with cancel_col:
         if st.button("Cancel", use_container_width=True):
+            _cleanup()
             st.rerun()
 
 
