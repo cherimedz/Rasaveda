@@ -111,7 +111,15 @@ def _alt_search_terms(name: str, cuisine: str) -> list[str]:
 
 
 _SKIP_IMAGE_PATTERNS = re.compile(
-    r"\.(svg|gif)$|flag|logo|icon|map|seal|coat.of.arms|symbol|shackle|semi.protect",
+    r"\.(svg|gif)$|flag|logo|icon|map|seal|coat.of.arms|symbol|shackle|semi.protect|poster",
+    re.IGNORECASE,
+)
+
+# Wikipedia disambiguation suffixes that indicate a non-food article
+_NON_FOOD_DISAMBIG = re.compile(
+    r"\((film|movie|tv series|television series|miniseries|album|song|band|"
+    r"book|novel|video game|game|play|musical|manga|anime|character|person|"
+    r"politician|actor|singer|rapper|sportsperson)\)",
     re.IGNORECASE,
 )
 
@@ -144,9 +152,10 @@ def _wiki_fetch_image_for_title(title: str) -> str | None:
         for pid, page in data.get("query", {}).get("pages", {}).items():
             if pid == "-1":
                 continue
-            # 1. Lead image via pageimages
+            # 1. Lead image via pageimages — only accept Wikimedia Commons images
+            #    (non-Commons URLs like wikipedia/en/ are non-free: movie posters, etc.)
             thumb = page.get("thumbnail", {}).get("source")
-            if thumb:
+            if thumb and "/commons/" in thumb:
                 return thumb
 
             # 2. First usable image from the article's image list
@@ -213,8 +222,14 @@ def _query_wikipedia(name: str) -> tuple[str | None, str]:
 
             time.sleep(0.4)
 
-            for title in titles:
-                if not _wiki_related(name, title):
+            for rank, title in enumerate(titles):
+                # Skip non-food pages: films, albums, TV shows, etc.
+                if _NON_FOOD_DISAMBIG.search(title):
+                    continue
+                # The first opensearch result is trusted directly — OpenSearch already
+                # ranked it highest (handles synonym/transliteration cases like
+                # 'Tadka' → 'Tempering (spices)'). Results 2+ require word overlap.
+                if rank > 0 and not _wiki_related(name, title):
                     continue
                 img = _wiki_fetch_image_for_title(title)
                 if img:
@@ -247,21 +262,41 @@ def _tokenize(s: str, min_len: int = 3) -> set[str]:
     return tokens
 
 
+_FOOD_DISAMBIG = re.compile(
+    r"\((dish|food|cuisine|recipe|cooking|technique|spice|spices|ingredient|"
+    r"drink|beverage|bread|pastry|dessert|curry|soup|sauce|condiment|snack|"
+    r"sweet|confection|stew|salad|dip|spread|grain|legume|pulse|herb|seasoning)\)",
+    re.IGNORECASE,
+)
+
+
 def _wiki_related(query: str, wiki_title: str) -> bool:
     """True if the Wikipedia article is plausibly about this recipe.
 
-    Cleans both the query (strip parenthetical/suffix) and the wiki title before
-    tokenizing on spaces and hyphens. Accepts when title tokens ⊆ query tokens,
-    or Jaccard >= threshold for multi-word matches.
+    Hard-rejects non-food disambiguation (films, music, TV).
+    Accepts food-tagged disambiguations, single-word synonym cases
+    (e.g. 'Tadka' → 'Tempering (spices)'), and word-overlap matches.
     """
+    # Hard reject: film, album, TV show, etc.
+    if _NON_FOOD_DISAMBIG.search(wiki_title):
+        return False
+
+    # Trust food-tagged disambiguation pages explicitly
+    if _FOOD_DISAMBIG.search(wiki_title):
+        return True
+
     clean_q = _clean_search_term(query)
     clean_t = re.sub(r"\s*\(.*?\)", "", wiki_title).strip()
     q = _tokenize(clean_q)
     w = _tokenize(clean_t)
+
     if not w or not q:
-        return False
+        return True  # can't check, trust OpenSearch
+
+    # Direct subset match
     if w.issubset(q):
         return True
+
     intersection = q & w
     union = q | w
     return len(q) >= 2 and len(w) >= 2 and len(intersection) / len(union) >= _WIKI_THRESHOLD

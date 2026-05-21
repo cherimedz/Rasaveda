@@ -1113,35 +1113,60 @@ def render_add_tab():
 
 
 # ===========================================================================
-# TAB 3 — IMPROVE A RECIPE
+# TAB 3 — IMPROVE A RECIPE  (AI analysis + Admin editor)
 # ===========================================================================
 
-def render_improve_tab():
-    t = THEMES[_active_theme()]
-    st.subheader("Improve a Recipe — Step by Step")
-    st.markdown(
-        "Pick any recipe and Rasaveda analyzes each cooking step, "
-        "suggesting improvements rooted in classical technique."
+def _init_edit_state(recipe):
+    """Seed edit session state from a recipe — resets when recipe changes."""
+    if st.session_state.get("edit_recipe_id") == recipe.id:
+        return  # already seeded for this recipe
+    st.session_state["edit_recipe_id"]      = recipe.id
+    st.session_state["edit_ings"]           = [
+        {"name": k, "qty": v} for k, v in recipe.ingredient_quantities.items()
+    ] or [{"name": "", "qty": ""}]
+    st.session_state["edit_steps"]          = list(recipe.instructions) or [""]
+    st.session_state["edit_cropped_bytes"]  = None
+    st.session_state["edit_upload_key"]     = 0
+    st.session_state["edit_save_msg"]       = None
+
+
+def _edit_image_section(recipe):
+    """Image upload + crop for the editor; pre-shows existing image."""
+    from streamlit_cropper import st_cropper
+
+    st.markdown("**Recipe Photo**")
+    existing_url = _fetch_image(recipe.name, recipe.cuisine, image_path=getattr(recipe, "image_path", None))
+    if existing_url and not st.session_state.edit_cropped_bytes:
+        st.image(existing_url, caption="Current image", use_container_width=True)
+
+    uploaded = st.file_uploader(
+        "Replace photo",
+        type=["jpg", "jpeg", "png", "webp"],
+        key=f"edit_img_{st.session_state.edit_upload_key}",
+        label_visibility="collapsed",
     )
-    st.markdown("---")
+    if uploaded:
+        pil_img = Image.open(uploaded).convert("RGB")
+        st.caption("Drag handles to crop, then **Use this crop**.")
+        cropped = st_cropper(pil_img, realtime_update=True, box_color="#FF9933", aspect_ratio=(4, 3))
+        st.markdown("**Preview**")
+        st.image(cropped, use_container_width=True)
+        if st.button("Use this crop", key="edit_use_crop"):
+            buf = io.BytesIO()
+            cropped.save(buf, format="JPEG", quality=88)
+            st.session_state.edit_cropped_bytes = buf.getvalue()
+            st.session_state.edit_upload_key += 1
+            st.rerun()
+    elif st.session_state.edit_cropped_bytes:
+        st.image(st.session_state.edit_cropped_bytes, caption="New photo (unsaved)", use_container_width=True)
+        if st.button("Remove new photo", key="edit_rm_photo"):
+            st.session_state.edit_cropped_bytes = None
+            st.rerun()
 
-    all_recipes  = cached_base_recipes() + load_user_recipes()
-    recipe_map   = {r.name: r for r in all_recipes}
 
-    if not recipe_map:
-        st.info("No recipes available yet."); return
-
-    col_sel, col_btn = st.columns([4, 1])
-    with col_sel:
-        chosen_name = st.selectbox("Choose a recipe to analyze", sorted(recipe_map.keys()))
-    with col_btn:
-        st.markdown("<br>", unsafe_allow_html=True)
-        analyze = st.button("Analyze", type="primary", use_container_width=True)
-
-    chosen = recipe_map[chosen_name]
-    thumb  = get_dish_gradient(chosen.cuisine, chosen.name)
-
-    # Dish header
+def _render_ai_analysis(chosen):
+    """AI step-by-step analysis — the original Improve functionality."""
+    thumb = get_dish_gradient(chosen.cuisine, chosen.name)
     st.markdown(f"""
 <div style="background:{thumb};border-radius:10px;padding:1px;margin-bottom:.8rem;">
   <div style="background:var(--t-card);border-radius:9px;padding:.8rem 1rem;">
@@ -1158,6 +1183,7 @@ def render_improve_tab():
         for i, step in enumerate(chosen.instructions, 1):
             st.markdown(f"**{i}.** {step}")
 
+    analyze = st.button("Analyze with AI", type="primary")
     if not analyze:
         return
 
@@ -1167,14 +1193,12 @@ def render_improve_tab():
         except Exception as e:
             st.error(f"Could not analyze recipe: {e}"); return
 
-    # Overall assessment
     st.markdown("---")
     st.markdown(f"""<div class="banner">
       <strong>{_FA_CHART} Overall Assessment</strong>
       <div class="ban-tip">{_safe_html(result.overall_assessment)}</div>
     </div>""", unsafe_allow_html=True)
 
-    # Per-step improvements
     st.markdown("### Step-by-Step Analysis")
     improved_count = sum(1 for s in result.improvements if s.has_improvement)
     st.caption(f"{improved_count} of {len(result.improvements)} steps have suggested improvements")
@@ -1197,16 +1221,178 @@ def render_improve_tab():
         tips_html = "".join(f'<span class="tip-chip">{_FA_BULB} {_safe_html(tip)}</span>' for tip in result.general_tips)
         st.markdown(tips_html, unsafe_allow_html=True)
 
-    # Save improved version (only for user recipes)
-    if improved_count > 0 and chosen.id.startswith("usr-"):
+    if improved_count > 0:
         st.markdown("---")
-        if st.button("Save improved version to My Library", type="secondary"):
+        if st.button("Save improved version", type="secondary"):
             improved_steps = [
                 imp.improved if imp.has_improvement else imp.original
                 for imp in result.improvements
             ]
             save_user_recipe(chosen.model_copy(update={"instructions": improved_steps}))
             st.success(f"'{chosen.name}' updated with improved steps!")
+
+
+def _render_edit_form(chosen):
+    """Full admin editor for any recipe field."""
+    _init_edit_state(chosen)
+
+    if st.session_state.edit_save_msg:
+        st.success(st.session_state.edit_save_msg)
+        st.session_state.edit_save_msg = None
+
+    is_base = not chosen.id.startswith("usr-")
+    if is_base:
+        st.info(
+            "This is a **built-in recipe**. Saving creates an editable personal copy "
+            "that overrides the original in all searches and recommendations.",
+            icon="ℹ️",
+        )
+
+    # ── Metadata ─────────────────────────────────────────────────────────────
+    meta_col, photo_col = st.columns([3, 2])
+
+    with photo_col:
+        _edit_image_section(chosen)
+
+    with meta_col:
+        c1, c2 = st.columns(2)
+        with c1:
+            ed_name    = st.text_input("Recipe Name *", value=chosen.name, key="ed_name")
+            ed_cuisine = st.selectbox("Cuisine *", ALL_CUISINES,
+                                      index=ALL_CUISINES.index(chosen.cuisine) if chosen.cuisine in ALL_CUISINES else 0,
+                                      key="ed_cuisine")
+            ed_course  = st.selectbox("Course", ["—"] + ALL_COURSES,
+                                      index=(ALL_COURSES.index(chosen.course) + 1) if chosen.course in ALL_COURSES else 0,
+                                      key="ed_course")
+            ed_desc    = st.text_area("Description *", value=chosen.description, height=90, key="ed_desc")
+        with c2:
+            ed_diff    = st.selectbox("Difficulty *", ["easy", "medium", "hard"],
+                                      index=["easy", "medium", "hard"].index(chosen.difficulty.value),
+                                      key="ed_diff")
+            ed_prep    = st.number_input("Prep Time (min)", 0, 480, chosen.prep_time_minutes, key="ed_prep")
+            ed_cook    = st.number_input("Cook Time (min)", 0, 720, chosen.cook_time_minutes, key="ed_cook")
+            ed_serve   = st.number_input("Servings", 1, 50, chosen.servings, key="ed_serve")
+            ed_tips    = st.text_area("Chef's Tip", value=chosen.tips or "", height=68, key="ed_tips")
+
+    # ── Dietary + flavor ─────────────────────────────────────────────────────
+    st.markdown("---")
+    dc1, dc2 = st.columns(2)
+    with dc1:
+        st.markdown("**Dietary Tags**")
+        ed_dietary = st.multiselect("Dietary", ALL_DIETARY,
+                                    default=[t for t in chosen.dietary_tags if t in ALL_DIETARY],
+                                    key="ed_dietary")
+    with dc2:
+        st.markdown("**Flavor Profile** *")
+        ed_flavors = st.multiselect("Flavors", ALL_FLAVORS,
+                                    default=[f for f in chosen.flavor_profile if f in ALL_FLAVORS],
+                                    key="ed_flavors")
+
+    # ── Ingredients ──────────────────────────────────────────────────────────
+    st.markdown("---")
+    st.markdown("**Ingredients**")
+    for i, row in enumerate(st.session_state.edit_ings):
+        cA, cB, cDel = st.columns([4, 3, 1])
+        with cA:
+            st.session_state.edit_ings[i]["name"] = st.text_input(
+                f"EI {i+1}", value=row["name"], key=f"ein_{i}",
+                placeholder="ingredient name", label_visibility="collapsed",
+            )
+        with cB:
+            st.session_state.edit_ings[i]["qty"] = st.text_input(
+                f"EQ {i+1}", value=row["qty"], key=f"eiq_{i}",
+                placeholder="quantity", label_visibility="collapsed",
+            )
+        with cDel:
+            if len(st.session_state.edit_ings) > 1 and st.button("✕", key=f"edi_{i}"):
+                st.session_state.edit_ings.pop(i); st.rerun()
+    if st.button("+ Add Ingredient", key="edit_add_ing"):
+        st.session_state.edit_ings.append({"name": "", "qty": ""}); st.rerun()
+
+    # ── Instructions ─────────────────────────────────────────────────────────
+    st.markdown("---")
+    st.markdown("**Instructions**")
+    for i, step in enumerate(st.session_state.edit_steps):
+        cS, cD = st.columns([10, 1])
+        with cS:
+            st.session_state.edit_steps[i] = st.text_area(
+                f"ES {i+1}", value=step, key=f"est_{i}", height=65,
+                placeholder=f"Step {i+1}", label_visibility="collapsed",
+            )
+        with cD:
+            if len(st.session_state.edit_steps) > 1 and st.button("✕", key=f"eds_{i}"):
+                st.session_state.edit_steps.pop(i); st.rerun()
+    if st.button("+ Add Step", key="edit_add_step"):
+        st.session_state.edit_steps.append(""); st.rerun()
+
+    # ── Save ─────────────────────────────────────────────────────────────────
+    st.markdown("---")
+    if st.button("Save Changes", type="primary", use_container_width=True, key="edit_save"):
+        errors = []
+        if not ed_name.strip():    errors.append("Recipe Name is required.")
+        if not ed_desc.strip():    errors.append("Description is required.")
+        if not ed_flavors:         errors.append("Select at least one Flavor Profile.")
+        ings_clean  = [r for r in st.session_state.edit_ings  if r["name"].strip()]
+        steps_clean = [s.strip() for s in st.session_state.edit_steps if s.strip()]
+        if not ings_clean:         errors.append("Add at least one ingredient.")
+        if not steps_clean:        errors.append("Add at least one instruction step.")
+        for e in errors:
+            st.error(e)
+
+        if not errors:
+            # Resolve image: new upload > existing path > None
+            img_path = getattr(chosen, "image_path", None)
+            if st.session_state.edit_cropped_bytes:
+                img_path = save_user_image(chosen.id, st.session_state.edit_cropped_bytes, ".jpg")
+
+            course_val = ed_course if ed_course != "—" else None
+            updated = Recipe(
+                id=chosen.id,
+                name=ed_name.strip(),
+                description=ed_desc.strip(),
+                cuisine=ed_cuisine,
+                dietary_tags=ed_dietary,
+                difficulty=Difficulty(ed_diff),
+                prep_time_minutes=int(ed_prep),
+                cook_time_minutes=int(ed_cook),
+                servings=int(ed_serve),
+                ingredients=[r["name"].strip() for r in ings_clean],
+                ingredient_quantities={r["name"].strip(): r["qty"].strip() for r in ings_clean},
+                instructions=steps_clean,
+                flavor_profile=ed_flavors,
+                tips=ed_tips.strip() or None,
+                course=course_val,
+                image_path=img_path,
+            )
+            with st.spinner("Saving changes..."):
+                save_user_recipe(updated)
+            # Reset edit state to reflect saved values
+            st.session_state.edit_recipe_id     = None  # forces re-seed on next render
+            st.session_state.edit_cropped_bytes = None
+            st.session_state.edit_save_msg = f"'{updated.name}' saved successfully."
+            st.rerun()
+
+
+def render_improve_tab():
+    st.subheader("Improve · Edit")
+    st.markdown("---")
+
+    all_recipes = cached_base_recipes() + load_user_recipes()
+    recipe_map  = {r.name: r for r in all_recipes}
+
+    if not recipe_map:
+        st.info("No recipes available yet."); return
+
+    chosen_name = st.selectbox("Choose a recipe", sorted(recipe_map.keys()), key="improve_select")
+    chosen = recipe_map[chosen_name]
+
+    ai_tab, edit_tab = st.tabs(["AI Analysis", "Edit Recipe"])
+
+    with ai_tab:
+        _render_ai_analysis(chosen)
+
+    with edit_tab:
+        _render_edit_form(chosen)
 
 
 # ===========================================================================
