@@ -398,7 +398,7 @@ BASE_CSS = """
 }
 .cb-ingredients {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
   gap: 0 1.2rem;
 }
 .cb-ing-row {
@@ -409,9 +409,17 @@ BASE_CSS = """
   border-bottom: 1px dotted var(--t-divider);
   font-size: .87rem;
   gap: .5rem;
+  min-width: 0;
 }
-.cb-ing-name { color: var(--t-text); font-weight: 500; }
-.cb-ing-qty  { color: var(--t-muted); font-style: italic; white-space: nowrap; }
+.cb-ing-name {
+  color: var(--t-text);
+  font-weight: 500;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.cb-ing-qty  { color: var(--t-muted); font-style: italic; white-space: nowrap; flex-shrink: 0; }
 .cb-steps { display: flex; flex-direction: column; gap: .75rem; }
 .cb-step {
   display: flex;
@@ -932,49 +940,73 @@ def _init_form_state():
             st.session_state[k] = v
 
 
-def _image_uploader_section():
-    """Image upload → crop → preview panel. Returns (bytes | None, suffix)."""
+@st.dialog("Crop Your Photo", width="large")
+def _crop_dialog(img_bytes: bytes, target_key: str):
+    """Modal crop dialog. Writes result to session_state[target_key] and closes."""
     from streamlit_cropper import st_cropper
+    pil_img = Image.open(io.BytesIO(img_bytes)).convert("RGB")
 
+    st.caption("Drag the orange handles to frame your shot, then confirm.")
+    left, right = st.columns([3, 2])
+    with left:
+        cropped = st_cropper(
+            pil_img,
+            realtime_update=True,
+            box_color="#FF9933",
+            aspect_ratio=(4, 3),
+        )
+    with right:
+        st.markdown("**Preview**")
+        st.image(cropped, use_container_width=True)
+        st.caption("4 : 3 ratio")
+
+    st.markdown("---")
+    col_ok, col_cancel = st.columns(2)
+    with col_ok:
+        if st.button("Use this crop", type="primary", use_container_width=True):
+            buf = io.BytesIO()
+            cropped.save(buf, format="JPEG", quality=88)
+            st.session_state[target_key] = buf.getvalue()
+            st.rerun()
+    with col_cancel:
+        if st.button("Cancel", use_container_width=True):
+            st.rerun()
+
+
+def _image_uploader_section():
+    """Upload button → modal crop dialog → preview. Returns (bytes | None, suffix)."""
     st.markdown("**Recipe Photo** *(optional)*")
-    uploaded = st.file_uploader(
-        "Upload a photo",
-        type=["jpg", "jpeg", "png", "webp"],
-        key=f"img_upload_{st.session_state.upload_key}",
-        label_visibility="collapsed",
-    )
 
-    if uploaded is None:
-        if st.session_state.cropped_img_bytes:
-            st.image(st.session_state.cropped_img_bytes, caption="Current photo", use_container_width=True)
+    if st.session_state.cropped_img_bytes:
+        st.image(st.session_state.cropped_img_bytes, caption="Photo ready", use_container_width=True)
+        col_re, col_rm = st.columns(2)
+        with col_re:
+            uploaded = st.file_uploader(
+                "Replace", type=["jpg", "jpeg", "png", "webp"],
+                key=f"img_upload_{st.session_state.upload_key}",
+                label_visibility="collapsed",
+            )
+            if uploaded:
+                st.session_state._add_pending = uploaded.read()
+                st.session_state.upload_key += 1
+                _crop_dialog(st.session_state._add_pending, "cropped_img_bytes")
+        with col_rm:
             if st.button("Remove photo", key="rm_photo"):
                 st.session_state.cropped_img_bytes = None
                 st.rerun()
-        return st.session_state.cropped_img_bytes, ".jpg"
-
-    pil_img = Image.open(uploaded).convert("RGB")
-    suffix = "." + (uploaded.name.rsplit(".", 1)[-1].lower() if "." in uploaded.name else "jpg")
-    if suffix == ".jpeg":
-        suffix = ".jpg"
-
-    st.caption("Drag the handles to crop, then click **Use this crop**.")
-    cropped: Image.Image = st_cropper(
-        pil_img,
-        realtime_update=True,
-        box_color="#FF9933",
-        aspect_ratio=(4, 3),
-    )
-
-    # Live preview
-    st.markdown("**Preview**")
-    st.image(cropped, use_container_width=True)
-
-    if st.button("Use this crop", type="primary", key="use_crop"):
-        buf = io.BytesIO()
-        cropped.save(buf, format="JPEG", quality=88)
-        st.session_state.cropped_img_bytes = buf.getvalue()
-        st.session_state.upload_key += 1
-        st.rerun()
+    else:
+        uploaded = st.file_uploader(
+            "Upload a photo",
+            type=["jpg", "jpeg", "png", "webp"],
+            key=f"img_upload_{st.session_state.upload_key}",
+            label_visibility="collapsed",
+        )
+        if uploaded:
+            raw = uploaded.read()
+            if st.button("Crop & Preview", type="secondary", key="open_crop"):
+                _crop_dialog(raw, "cropped_img_bytes")
+        else:
+            st.caption("Upload a JPG, PNG or WebP — you'll crop it before saving.")
 
     return st.session_state.cropped_img_bytes, ".jpg"
 
@@ -1131,37 +1163,47 @@ def _init_edit_state(recipe):
 
 
 def _edit_image_section(recipe):
-    """Image upload + crop for the editor; pre-shows existing image."""
-    from streamlit_cropper import st_cropper
-
+    """Image section for the editor — shows current image, upload triggers modal crop."""
     st.markdown("**Recipe Photo**")
     existing_url = _fetch_image(recipe.name, recipe.cuisine, image_path=getattr(recipe, "image_path", None))
-    if existing_url and not st.session_state.edit_cropped_bytes:
-        st.image(existing_url, caption="Current image", use_container_width=True)
 
-    uploaded = st.file_uploader(
-        "Replace photo",
-        type=["jpg", "jpeg", "png", "webp"],
-        key=f"edit_img_{st.session_state.edit_upload_key}",
-        label_visibility="collapsed",
-    )
-    if uploaded:
-        pil_img = Image.open(uploaded).convert("RGB")
-        st.caption("Drag handles to crop, then **Use this crop**.")
-        cropped = st_cropper(pil_img, realtime_update=True, box_color="#FF9933", aspect_ratio=(4, 3))
-        st.markdown("**Preview**")
-        st.image(cropped, use_container_width=True)
-        if st.button("Use this crop", key="edit_use_crop"):
-            buf = io.BytesIO()
-            cropped.save(buf, format="JPEG", quality=88)
-            st.session_state.edit_cropped_bytes = buf.getvalue()
-            st.session_state.edit_upload_key += 1
-            st.rerun()
-    elif st.session_state.edit_cropped_bytes:
+    if st.session_state.edit_cropped_bytes:
         st.image(st.session_state.edit_cropped_bytes, caption="New photo (unsaved)", use_container_width=True)
-        if st.button("Remove new photo", key="edit_rm_photo"):
-            st.session_state.edit_cropped_bytes = None
-            st.rerun()
+        col_re, col_rm = st.columns(2)
+        with col_re:
+            uploaded = st.file_uploader(
+                "Replace", type=["jpg", "jpeg", "png", "webp"],
+                key=f"edit_img_{st.session_state.edit_upload_key}",
+                label_visibility="collapsed",
+            )
+            if uploaded:
+                if st.button("Crop & Preview", key="edit_recrop"):
+                    _crop_dialog(uploaded.read(), "edit_cropped_bytes")
+        with col_rm:
+            if st.button("Remove new photo", key="edit_rm_photo"):
+                st.session_state.edit_cropped_bytes = None
+                st.rerun()
+    elif existing_url:
+        st.image(existing_url, caption="Current image", use_container_width=True)
+        uploaded = st.file_uploader(
+            "Replace photo", type=["jpg", "jpeg", "png", "webp"],
+            key=f"edit_img_{st.session_state.edit_upload_key}",
+            label_visibility="collapsed",
+        )
+        if uploaded:
+            if st.button("Crop & Preview", key="edit_open_crop"):
+                _crop_dialog(uploaded.read(), "edit_cropped_bytes")
+    else:
+        uploaded = st.file_uploader(
+            "Add a photo", type=["jpg", "jpeg", "png", "webp"],
+            key=f"edit_img_{st.session_state.edit_upload_key}",
+            label_visibility="collapsed",
+        )
+        if uploaded:
+            if st.button("Crop & Preview", key="edit_open_crop2"):
+                _crop_dialog(uploaded.read(), "edit_cropped_bytes")
+        else:
+            st.caption("No photo yet — upload one above.")
 
 
 def _render_ai_analysis(chosen):
@@ -1373,6 +1415,37 @@ def _render_edit_form(chosen):
             st.rerun()
 
 
+def _render_admin_edit_tab(chosen):
+    """Gate the edit form behind an admin password."""
+    authed = st.session_state.get("admin_authed", False)
+
+    if not authed:
+        st.markdown("### Admin Access Required")
+        st.caption("Recipe editing is restricted. Enter the admin password to unlock.")
+        pwd = st.text_input("Password", type="password", key="admin_pwd_input", label_visibility="collapsed",
+                            placeholder="Admin password")
+        col_ok, col_hint = st.columns([1, 3])
+        with col_ok:
+            if st.button("Unlock", type="primary", use_container_width=True):
+                if pwd == settings.admin_password:
+                    st.session_state.admin_authed = True
+                    st.rerun()
+                else:
+                    st.error("Incorrect password.")
+        with col_hint:
+            st.caption("Set `ADMIN_PASSWORD` in your `.env` file to change this.")
+        return
+
+    # Authenticated — show lock button + editor
+    lock_col, _ = st.columns([1, 5])
+    with lock_col:
+        if st.button("Lock editor", key="admin_lock"):
+            st.session_state.admin_authed = False
+            st.rerun()
+
+    _render_edit_form(chosen)
+
+
 def render_improve_tab():
     st.subheader("Improve · Edit")
     st.markdown("---")
@@ -1392,7 +1465,7 @@ def render_improve_tab():
         _render_ai_analysis(chosen)
 
     with edit_tab:
-        _render_edit_form(chosen)
+        _render_admin_edit_tab(chosen)
 
 
 # ===========================================================================

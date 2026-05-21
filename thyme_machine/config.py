@@ -12,6 +12,7 @@ class Settings(BaseSettings):
     collection_name: str = Field(default="rasaveda_recipes")
     top_k_results: int = Field(default=8)
     recipes_path: str = Field(default="./data/recipes.json")
+    admin_password: str = Field(default="rasaveda-admin", description="Password to unlock the recipe editor")
 
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8", "extra": "ignore"}
 
