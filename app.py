@@ -1,10 +1,12 @@
 """
 Rasaveda (रसवेद) — Knowledge of Flavors
-Streamlit app: Find · Add · Improve · Library  +  5 Indian visual themes
+Streamlit app: Find · Add (with image crop) · Improve · Browse · Library · Chat  +  5 Indian visual themes
 """
 
 import html as _html
+import io
 import streamlit as st
+from PIL import Image
 
 st.set_page_config(
     page_title="Rasaveda · रसवेद",
@@ -21,7 +23,7 @@ from thyme_machine.models import Difficulty, Recipe, RecommendationRequest
 from thyme_machine.retrieval import retrieve_recipes
 from thyme_machine.chatbot import chat_response
 from thyme_machine.chat_history import clear_chat_history, load_chat_history, save_chat_history
-from thyme_machine.images import get_recipe_image as _fetch_image
+from thyme_machine.images import get_recipe_image as _fetch_image, get_user_image_data_url
 from thyme_machine.retrieval import search_by_text
 from thyme_machine.themes import DISH_GRADIENTS, THEMES, build_theme_css, get_dish_gradient
 from thyme_machine.user_recipes import (
@@ -29,6 +31,7 @@ from thyme_machine.user_recipes import (
     generate_recipe_id,
     load_user_recipes,
     save_user_recipe,
+    save_user_image,
 )
 
 # ---------------------------------------------------------------------------
@@ -638,6 +641,19 @@ def _pills(items: list[str], cls: str) -> str:
     ) or f'<span style="font-size:.76rem;color:var(--t-muted);">{"none" if cls=="nd-p" else "You have it all!"}</span>'
 
 
+def _make_thumb_html(img_url: str | None, gradient: str, name: str) -> str:
+    if img_url:
+        return f'<img src="{img_url}" class="rec-img" alt="{_safe_html(name)}">'
+    return (
+        f'<div style="background:{gradient};height:240px;display:flex;'
+        f'align-items:center;justify-content:center;">'
+        f'<span style="color:rgba(255,255,255,0.92);font-size:1.15rem;font-weight:800;'
+        f'text-shadow:0 2px 10px rgba(0,0,0,0.55);padding:1rem;text-align:center;'
+        f'letter-spacing:.02em;">{_safe_html(name)}</span>'
+        f'</div>'
+    )
+
+
 def _recipe_card(rec, rank: int):
     r = rec.recipe
     badge   = RANK_BADGES[rank]
@@ -658,19 +674,8 @@ def _recipe_card(rec, rank: int):
         )
         sub_html = f'<div class="sub-box">{_FA_BULB} Substitutions:<br>{rows}</div>'
 
-    img_url = _fetch_image(r.name, r.cuisine)
-    thumb_html = (
-        f'<img src="{img_url}" class="rec-img" alt="{_safe_html(r.name)}">'
-        if img_url
-        else (
-            f'<div style="background:{thumb};height:240px;display:flex;'
-            f'align-items:center;justify-content:center;">'
-            f'<span style="color:rgba(255,255,255,0.92);font-size:1.15rem;font-weight:800;'
-            f'text-shadow:0 2px 10px rgba(0,0,0,0.55);padding:1rem;text-align:center;'
-            f'letter-spacing:.02em;">{_safe_html(r.name)}</span>'
-            f'</div>'
-        )
-    )
+    img_url = _fetch_image(r.name, r.cuisine, image_path=getattr(r, "image_path", None))
+    thumb_html = _make_thumb_html(img_url, thumb, r.name)
 
     # Escape all LLM-generated text — newlines inside an HTML block break Streamlit's renderer
     why_html      = _safe_html(rec.why_it_fits)
@@ -916,18 +921,66 @@ def render_find_tab():
 
 def _init_form_state():
     defaults = {
-        "form_ings":    [{"name": "", "qty": ""}],
-        "form_steps":   [""],
-        "add_success":  None,
+        "form_ings":        [{"name": "", "qty": ""}],
+        "form_steps":       [""],
+        "add_success":      None,
+        "cropped_img_bytes": None,  # final JPEG bytes after crop
+        "upload_key":       0,      # bumped on reset to clear the uploader widget
     }
     for k, v in defaults.items():
         if k not in st.session_state:
             st.session_state[k] = v
 
 
+def _image_uploader_section():
+    """Image upload → crop → preview panel. Returns (bytes | None, suffix)."""
+    from streamlit_cropper import st_cropper
+
+    st.markdown("**Recipe Photo** *(optional)*")
+    uploaded = st.file_uploader(
+        "Upload a photo",
+        type=["jpg", "jpeg", "png", "webp"],
+        key=f"img_upload_{st.session_state.upload_key}",
+        label_visibility="collapsed",
+    )
+
+    if uploaded is None:
+        if st.session_state.cropped_img_bytes:
+            st.image(st.session_state.cropped_img_bytes, caption="Current photo", use_container_width=True)
+            if st.button("Remove photo", key="rm_photo"):
+                st.session_state.cropped_img_bytes = None
+                st.rerun()
+        return st.session_state.cropped_img_bytes, ".jpg"
+
+    pil_img = Image.open(uploaded).convert("RGB")
+    suffix = "." + (uploaded.name.rsplit(".", 1)[-1].lower() if "." in uploaded.name else "jpg")
+    if suffix == ".jpeg":
+        suffix = ".jpg"
+
+    st.caption("Drag the handles to crop, then click **Use this crop**.")
+    cropped: Image.Image = st_cropper(
+        pil_img,
+        realtime_update=True,
+        box_color="#FF9933",
+        aspect_ratio=(4, 3),
+    )
+
+    # Live preview
+    st.markdown("**Preview**")
+    st.image(cropped, use_container_width=True)
+
+    if st.button("Use this crop", type="primary", key="use_crop"):
+        buf = io.BytesIO()
+        cropped.save(buf, format="JPEG", quality=88)
+        st.session_state.cropped_img_bytes = buf.getvalue()
+        st.session_state.upload_key += 1
+        st.rerun()
+
+    return st.session_state.cropped_img_bytes, ".jpg"
+
+
 def render_add_tab():
     _init_form_state()
-    t = THEMES[_active_theme()]
 
     st.subheader("Add Your Own Recipe")
     st.markdown(
@@ -940,19 +993,25 @@ def render_add_tab():
         st.success(st.session_state.add_success)
         st.session_state.add_success = None
 
-    # Basic metadata
-    col1, col2 = st.columns(2)
-    with col1:
-        name        = st.text_input("Recipe Name *", placeholder="e.g. Nani's Dal Tadka")
-        cuisine     = st.selectbox("Cuisine *", ALL_CUISINES, index=0)
-        region      = st.selectbox("Regional Style (optional)", ["—"] + INDIAN_REGIONS)
-        description = st.text_area("Description *", placeholder="A short evocative description", height=90)
-    with col2:
-        difficulty  = st.selectbox("Difficulty *", ["easy", "medium", "hard"])
-        prep_time   = st.number_input("Prep Time (minutes)", 0, 480, 15)
-        cook_time   = st.number_input("Cook Time (minutes)", 0, 720, 30)
-        servings    = st.number_input("Servings", 1, 50, 4)
-        tips        = st.text_area("Chef's Tip (optional)", height=68)
+    # Layout: left = photo; right = metadata
+    meta_col, photo_col = st.columns([3, 2])
+
+    with photo_col:
+        cropped_bytes, img_suffix = _image_uploader_section()
+
+    with meta_col:
+        col1, col2 = st.columns(2)
+        with col1:
+            name        = st.text_input("Recipe Name *", placeholder="e.g. Nani's Dal Tadka")
+            cuisine     = st.selectbox("Cuisine *", ALL_CUISINES, index=0)
+            region      = st.selectbox("Regional Style (optional)", ["—"] + INDIAN_REGIONS)
+            description = st.text_area("Description *", placeholder="A short evocative description", height=90)
+        with col2:
+            difficulty  = st.selectbox("Difficulty *", ["easy", "medium", "hard"])
+            prep_time   = st.number_input("Prep Time (minutes)", 0, 480, 15)
+            cook_time   = st.number_input("Cook Time (minutes)", 0, 720, 30)
+            servings    = st.number_input("Servings", 1, 50, 4)
+            tips        = st.text_area("Chef's Tip (optional)", height=68)
 
     # Dietary + flavor
     st.markdown("---")
@@ -1022,8 +1081,12 @@ def render_add_tab():
 
         if not errors:
             display_name = f"{name.strip()} ({region})" if region != "—" else name.strip()
+            recipe_id = generate_recipe_id()
+            img_path = None
+            if cropped_bytes:
+                img_path = save_user_image(recipe_id, cropped_bytes, img_suffix)
             recipe = Recipe(
-                id=generate_recipe_id(),
+                id=recipe_id,
                 name=display_name,
                 description=description.strip(),
                 cuisine=cuisine,
@@ -1037,12 +1100,15 @@ def render_add_tab():
                 instructions=steps_clean,
                 flavor_profile=flavors,
                 tips=tips.strip() or None,
+                image_path=img_path,
             )
             with st.spinner("Saving and embedding your recipe..."):
                 save_user_recipe(recipe)
-            st.session_state.form_ings   = [{"name": "", "qty": ""}]
-            st.session_state.form_steps  = [""]
-            st.session_state.add_success = f"'{recipe.name}' saved and added to recommendations!"
+            st.session_state.form_ings        = [{"name": "", "qty": ""}]
+            st.session_state.form_steps       = [""]
+            st.session_state.cropped_img_bytes = None
+            st.session_state.upload_key       += 1
+            st.session_state.add_success      = f"'{recipe.name}' saved and added to recommendations!"
             st.rerun()
 
 
@@ -1200,7 +1266,170 @@ def render_library_tab():
 
 
 # ===========================================================================
-# TAB 5 — CHAT WITH RASAVEDA
+# TAB 5 — BROWSE ALL RECIPES
+# ===========================================================================
+
+_BROWSE_COURSES = [
+    "All", "Main Course", "Appetizer", "Soup", "Dessert",
+    "Bread", "Side Dish", "Breakfast", "Beverage", "Basics", "Condiment",
+]
+
+_DIFF_COLORS = {"easy": "#d4edda", "medium": "#fff3cd", "hard": "#f8d7da"}
+_DIFF_TEXT   = {"easy": "#155724", "medium": "#856404", "hard": "#721c24"}
+
+
+def _browse_recipe_card(recipe, idx: int):
+    """Compact browse card — image (if available), metadata, expandable full view."""
+    total  = recipe.prep_time_minutes + recipe.cook_time_minutes
+    diff   = recipe.difficulty.value
+    thumb  = get_dish_gradient(recipe.cuisine, recipe.name)
+    img_url = _fetch_image(recipe.name, recipe.cuisine, image_path=getattr(recipe, "image_path", None))
+    thumb_html = _make_thumb_html(img_url, thumb, recipe.name)
+
+    dtags  = " · ".join(recipe.dietary_tags[:2]) if recipe.dietary_tags else ""
+    course = recipe.course or "Main Course"
+    dc = _DIFF_COLORS.get(diff, "#eee")
+    dt = _DIFF_TEXT.get(diff, "#333")
+    flavors_str = ", ".join(recipe.flavor_profile[:3]) if recipe.flavor_profile else ""
+
+    card_html = (
+        f'<div class="rec-card" style="margin-bottom:1rem;">'
+        f'{thumb_html}'
+        f'<div class="rec-body" style="padding:.9rem 1.1rem 1rem;">'
+        f'<div class="rec-name" style="font-size:1.05rem;margin-bottom:.4rem;">{_safe_html(recipe.name)}</div>'
+        f'<div class="meta-row" style="margin-bottom:.5rem;">'
+        f'<span class="m-tag">{_FA_UTENSILS} {_safe_html(recipe.cuisine)}</span>'
+        f'<span class="m-tag" style="background:{dc};color:{dt};">{diff.capitalize()}</span>'
+        f'<span class="m-tag">{_FA_CLOCK} {total} min</span>'
+        f'<span class="m-tag">{_FA_USERS} {recipe.servings} srv</span>'
+        + (f'<span class="m-tag" style="font-style:italic;">{_safe_html(course)}</span>' if course else '')
+        + (f'<span class="m-tag" style="font-size:.72rem;color:var(--t-muted);">{_safe_html(dtags)}</span>' if dtags else '')
+        + f'</div>'
+        f'<div style="font-size:.82rem;color:var(--t-muted);line-height:1.5;margin-bottom:.3rem;">'
+        f'{_safe_html(recipe.description[:160])}{"…" if len(recipe.description) > 160 else ""}'
+        f'</div>'
+        + (f'<div style="font-size:.75rem;color:var(--t-muted);font-style:italic;">{_FA_FIRE} {_safe_html(flavors_str)}</div>' if flavors_str else '')
+        + f'</div></div>'
+    )
+    st.markdown(card_html, unsafe_allow_html=True)
+
+    with st.expander(f"Full Recipe — {recipe.name}"):
+        ing_rows = "".join(
+            f'<div class="cb-ing-row">'
+            f'<span class="cb-ing-name">{_safe_html(ing)}</span>'
+            f'<span class="cb-ing-qty">{_safe_html(qty)}</span>'
+            f'</div>'
+            for ing, qty in recipe.ingredient_quantities.items()
+        )
+        step_rows = "".join(
+            f'<div class="cb-step">'
+            f'<div class="cb-step-num">{i}</div>'
+            f'<div class="cb-step-text">{_safe_html(step)}</div>'
+            f'</div>'
+            for i, step in enumerate(recipe.instructions, 1)
+        )
+        tip_block = ""
+        if recipe.tips:
+            tip_block = (
+                f'<div class="cb-tip"><div class="cb-tip-label">{_FA_BULB} Chef\'s Tip</div>'
+                f'<div class="cb-tip-text">{_safe_html(recipe.tips)}</div></div>'
+            )
+        time_chips = (
+            f'<div class="cb-times">'
+            f'<span class="cb-time-chip">{_FA_KNIFE} Prep: {recipe.prep_time_minutes} min</span>'
+            f'<span class="cb-time-chip">{_FA_FIRE} Cook: {recipe.cook_time_minutes} min</span>'
+            f'<span class="cb-time-chip">{_FA_HOURGLASS} Total: {total} min</span>'
+            f'</div>'
+        )
+        st.markdown(
+            f'<div class="cookbook-page">{time_chips}'
+            f'<div class="cb-section"><div class="cb-section-title">Ingredients'
+            f'<span class="cb-serves">Serves {recipe.servings}</span></div>'
+            f'<div class="cb-ingredients">{ing_rows}</div></div>'
+            f'<div class="cb-section"><div class="cb-section-title">Method</div>'
+            f'<div class="cb-steps">{step_rows}</div></div>'
+            f'{tip_block}</div>',
+            unsafe_allow_html=True,
+        )
+
+
+def render_browse_tab():
+    st.subheader("Browse All Recipes")
+    st.markdown("Explore the full library by category, cuisine, or search — click any card to see the full recipe.")
+    st.markdown("---")
+
+    all_recipes = cached_base_recipes() + load_user_recipes()
+    if not all_recipes:
+        st.info("No recipes loaded yet."); return
+
+    # ── Filter bar ────────────────────────────────────────────────────────────
+    fc1, fc2, fc3 = st.columns([2, 2, 3])
+    with fc1:
+        course_filter = st.selectbox(
+            "Category", _BROWSE_COURSES, index=0, key="browse_course",
+            label_visibility="visible",
+        )
+    with fc2:
+        cuisine_opts = ["All cuisines"] + sorted({r.cuisine for r in all_recipes})
+        cuisine_filter = st.selectbox(
+            "Cuisine", cuisine_opts, index=0, key="browse_cuisine",
+        )
+    with fc3:
+        search_q = st.text_input(
+            "Search", placeholder="e.g. butter chicken, lentil, quick…",
+            key="browse_search",
+        )
+
+    diff_filter = st.radio(
+        "Difficulty", ["Any", "easy", "medium", "hard"],
+        horizontal=True, key="browse_diff", label_visibility="visible",
+    )
+
+    # ── Apply filters ─────────────────────────────────────────────────────────
+    filtered = all_recipes
+    if course_filter != "All":
+        filtered = [r for r in filtered if (r.course or "Main Course") == course_filter]
+    if cuisine_filter != "All cuisines":
+        filtered = [r for r in filtered if r.cuisine == cuisine_filter]
+    if diff_filter != "Any":
+        filtered = [r for r in filtered if r.difficulty.value == diff_filter]
+    if search_q.strip():
+        q = search_q.strip().lower()
+        filtered = [
+            r for r in filtered
+            if q in r.name.lower()
+            or q in r.description.lower()
+            or any(q in ing.lower() for ing in r.ingredients)
+            or q in r.cuisine.lower()
+        ]
+
+    # ── Course summary chips ──────────────────────────────────────────────────
+    from collections import Counter
+    course_counts = Counter((r.course or "Main Course") for r in filtered)
+    chips = "".join(
+        f'<span class="m-tag" style="font-size:.78rem;">'
+        f'{c} <strong>({n})</strong></span>'
+        for c, n in sorted(course_counts.items())
+    )
+    st.markdown(
+        f'<div class="meta-row" style="margin-bottom:.8rem;">{chips}</div>',
+        unsafe_allow_html=True,
+    )
+    st.caption(f"{len(filtered)} recipe{'s' if len(filtered) != 1 else ''} shown")
+
+    if not filtered:
+        st.warning("No recipes match your filters — try broadening the search.")
+        return
+
+    # ── Grid: 3 columns ───────────────────────────────────────────────────────
+    cols = st.columns(3)
+    for idx, recipe in enumerate(filtered):
+        with cols[idx % 3]:
+            _browse_recipe_card(recipe, idx)
+
+
+# ===========================================================================
+# TAB 6 — CHAT WITH RASAVEDA
 # ===========================================================================
 
 _CHAT_SUGGESTIONS = [
@@ -1298,10 +1527,11 @@ def main():
     _header()
 
     # 5. Main tabs
-    tab_find, tab_add, tab_improve, tab_library, tab_chat = st.tabs([
+    tab_find, tab_add, tab_improve, tab_browse, tab_library, tab_chat = st.tabs([
         "Find a Recipe",
         "Add Your Recipe",
         "Improve",
+        "Browse",
         "My Library",
         "Chat",
     ])
@@ -1312,6 +1542,8 @@ def main():
         render_add_tab()
     with tab_improve:
         render_improve_tab()
+    with tab_browse:
+        render_browse_tab()
     with tab_library:
         render_library_tab()
     with tab_chat:

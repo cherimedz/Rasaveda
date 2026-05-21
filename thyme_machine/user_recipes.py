@@ -11,6 +11,7 @@ from thyme_machine.ingestion import _build_metadata, _build_recipe_document, get
 from thyme_machine.models import Recipe
 
 USER_RECIPES_PATH = Path("./data/user_recipes.json")
+USER_IMAGES_DIR = Path("./data/user_images")
 
 
 def load_user_recipes() -> list[Recipe]:
@@ -50,6 +51,14 @@ def save_user_recipe(recipe: Recipe) -> None:
     )
 
 
+def save_user_image(recipe_id: str, image_bytes: bytes, suffix: str = ".jpg") -> str:
+    """Write image bytes to disk and return the relative path string."""
+    USER_IMAGES_DIR.mkdir(parents=True, exist_ok=True)
+    path = USER_IMAGES_DIR / f"{recipe_id}{suffix}"
+    path.write_bytes(image_bytes)
+    return str(path)
+
+
 def delete_user_recipe(recipe_id: str) -> bool:
     if not USER_RECIPES_PATH.exists():
         return False
@@ -63,6 +72,12 @@ def delete_user_recipe(recipe_id: str) -> bool:
 
     with open(USER_RECIPES_PATH, "w", encoding="utf-8") as f:
         json.dump(updated, f, indent=2, ensure_ascii=False)
+
+    # Remove uploaded image file if present
+    for ext in (".jpg", ".jpeg", ".png", ".webp"):
+        img_path = USER_IMAGES_DIR / f"{recipe_id}{ext}"
+        if img_path.exists():
+            img_path.unlink()
 
     try:
         get_collection().delete(ids=[recipe_id])

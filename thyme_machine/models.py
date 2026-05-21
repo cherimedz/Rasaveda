@@ -38,6 +38,7 @@ class Recipe(BaseModel):
     flavor_profile: list[str]
     tips: Optional[str] = None
     course: Optional[str] = None  # e.g. "Main Course", "Appetizer", "Dessert", "Basics"
+    image_path: Optional[str] = None  # relative path to user-uploaded image
 
 
 class RecommendationRequest(BaseModel):

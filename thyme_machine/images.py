@@ -42,8 +42,11 @@ def _load_disk_cache() -> None:
 def _flush_disk_cache() -> None:
     try:
         _CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
+        # Only persist successful (non-None) results so transient failures
+        # don't permanently block a recipe from getting an image.
+        disk_data = {k: v for k, v in _mem_cache.items() if v is not None}
         _CACHE_PATH.write_text(
-            json.dumps(_mem_cache, ensure_ascii=False, indent=2), encoding="utf-8"
+            json.dumps(disk_data, ensure_ascii=False, indent=2), encoding="utf-8"
         )
     except Exception:
         pass
@@ -107,25 +110,74 @@ def _alt_search_terms(name: str, cuisine: str) -> list[str]:
     return [t for t in terms if t.strip()]
 
 
+_SKIP_IMAGE_PATTERNS = re.compile(
+    r"\.(svg|gif)$|flag|logo|icon|map|seal|coat.of.arms|symbol|shackle|semi.protect",
+    re.IGNORECASE,
+)
+
+
 def _wiki_fetch_image_for_title(title: str) -> str | None:
-    """Fetch the thumbnail URL for a known Wikipedia article title."""
+    """Fetch a food-relevant image URL for a Wikipedia article.
+
+    Strategy:
+      1. pageimages (lead image) — fast, works for most articles.
+      2. images list fallback — used when the article has no lead image set
+         (e.g. Chicken 65). Picks the first .jpg/.jpeg/.png file whose name
+         doesn't look like a flag, logo, or icon.
+    """
     try:
         p = requests.get(
             "https://en.wikipedia.org/w/api.php",
             params={
                 "action": "query",
                 "titles": title,
-                "prop": "pageimages",
+                "prop": "pageimages|images",
                 "pithumbsize": 640,
+                "imlimit": 10,
                 "format": "json",
                 "redirects": 1,
             },
             timeout=6,
             headers=_WIKI_HEADERS,
         )
-        for pid, page in p.json().get("query", {}).get("pages", {}).items():
-            if pid != "-1":
-                return page.get("thumbnail", {}).get("source")
+        data = p.json()
+        for pid, page in data.get("query", {}).get("pages", {}).items():
+            if pid == "-1":
+                continue
+            # 1. Lead image via pageimages
+            thumb = page.get("thumbnail", {}).get("source")
+            if thumb:
+                return thumb
+
+            # 2. First usable image from the article's image list
+            for img_entry in page.get("images", []):
+                fname = img_entry.get("title", "")
+                if _SKIP_IMAGE_PATTERNS.search(fname):
+                    continue
+                if not re.search(r"\.(jpe?g|png|webp)$", fname, re.IGNORECASE):
+                    continue
+                # Resolve the file URL via imageinfo
+                try:
+                    ir = requests.get(
+                        "https://en.wikipedia.org/w/api.php",
+                        params={
+                            "action": "query",
+                            "titles": fname,
+                            "prop": "imageinfo",
+                            "iiprop": "url|thumburl",
+                            "iiurlwidth": 640,
+                            "format": "json",
+                        },
+                        timeout=5,
+                        headers=_WIKI_HEADERS,
+                    )
+                    for _, fp in ir.json().get("query", {}).get("pages", {}).items():
+                        info = fp.get("imageinfo", [{}])[0]
+                        url = info.get("thumburl") or info.get("url")
+                        if url:
+                            return url
+                except Exception:
+                    continue
     except Exception:
         pass
     return None
@@ -215,7 +267,19 @@ def _wiki_related(query: str, wiki_title: str) -> bool:
     return len(q) >= 2 and len(w) >= 2 and len(intersection) / len(union) >= _WIKI_THRESHOLD
 
 
-def get_recipe_image(name: str, cuisine: str = "") -> str | None:
+def get_user_image_data_url(image_path: str) -> str | None:
+    """Read a local user-uploaded image and return a base64 data URL for Streamlit."""
+    import base64
+    p = Path(image_path)
+    if not p.exists():
+        return None
+    suffix = p.suffix.lower()
+    mime = {"jpg": "image/jpeg", "jpeg": "image/jpeg", "png": "image/png", "webp": "image/webp"}.get(suffix.lstrip("."), "image/jpeg")
+    encoded = base64.b64encode(p.read_bytes()).decode()
+    return f"data:{mime};base64,{encoded}"
+
+
+def get_recipe_image(name: str, cuisine: str = "", image_path: str | None = None) -> str | None:
     """Return an image URL for a recipe, or None to fall back to the CSS gradient.
 
     Priority:
@@ -225,6 +289,12 @@ def get_recipe_image(name: str, cuisine: str = "") -> str | None:
       4. Wikipedia retry with alternative/simplified search terms
     None is stored in-memory only so transient API failures don't persist.
     """
+    # 0. User-uploaded local image takes priority
+    if image_path:
+        url = get_user_image_data_url(image_path)
+        if url:
+            return url
+
     key = name.lower().strip()
     if key in _mem_cache:
         return _mem_cache[key]
