@@ -33,6 +33,8 @@ from thyme_machine.user_recipes import (
     save_user_recipe,
     save_user_image,
 )
+from thyme_machine import shopping_list as _sl
+from thyme_machine import favourites as _fav
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -68,8 +70,8 @@ ALL_FLAVORS   = [
     "fresh", "smoky", "creamy", "rich", "aromatic", "pungent", "light",
 ]
 ALL_CUISINES  = [
-    "Indian", "Italian", "Mexican", "Japanese", "Thai", "Chinese",
-    "French", "Mediterranean", "Greek", "Korean", "Middle Eastern",
+    "Indian", "South Indian", "Italian", "Mexican", "Japanese", "Thai", "Chinese",
+    "French", "Mediterranean", "Greek", "Korean", "Middle Eastern", "Arabic",
     "American", "Contemporary",
     "Vietnamese", "Moroccan", "Spanish", "Indonesian", "Turkish", "Ethiopian", "Lebanese",
 ]
@@ -86,6 +88,43 @@ def _safe_html(text: str) -> str:
     because a blank line in a Streamlit markdown HTML block terminates the block,
     causing everything after to render as raw text."""
     return _html.escape(str(text)).replace("\r\n", " ").replace("\n", " ").replace("\r", " ")
+
+
+def _scale_qty(qty: str, factor: float) -> str:
+    """Scale a quantity string by factor, preserving the unit suffix."""
+    import re
+    from fractions import Fraction
+
+    if factor == 1.0:
+        return qty
+
+    def _fmt(f: Fraction) -> str:
+        if f <= 0:
+            return str(f)
+        if f.denominator == 1:
+            return str(f.numerator)
+        whole = f.numerator // f.denominator
+        rem = f - whole
+        if whole and rem:
+            return f"{whole} {rem}"
+        return str(f)
+
+    # Match "1 1/2", "1/2", "2.5", or plain integer at start of string
+    m = re.match(r"^(\d+\s+\d+/\d+|\d+/\d+|\d*\.?\d+)", qty.strip())
+    if not m:
+        return qty
+    raw = m.group(1).strip()
+    rest = qty[m.end():]
+    try:
+        parts = raw.split()
+        if len(parts) == 2:
+            frac = Fraction(parts[0]) + Fraction(parts[1])
+        else:
+            frac = Fraction(raw).limit_denominator(16)
+        scaled = (frac * Fraction(factor).limit_denominator(8)).limit_denominator(8)
+        return _fmt(scaled) + rest
+    except Exception:
+        return qty
 
 # ---------------------------------------------------------------------------
 # Base CSS — uses CSS variables; themes override :root values
@@ -518,6 +557,46 @@ def _active_theme() -> str:
     return st.session_state.get("rasaveda_theme", DEFAULT_THEME)
 
 
+def _sidebar_shopping_list():
+    """Shopping list widget rendered in the sidebar — visible on all tabs."""
+    items = _sl.load()
+    badge = f" ({len(items)})" if items else ""
+    with st.sidebar:
+        st.markdown('<hr style="border-color:#3a2010;margin:.6rem 0;">', unsafe_allow_html=True)
+        with st.expander(f"🛒 Shopping List{badge}", expanded=False):
+            if not items:
+                st.caption("Your list is empty. Use **Add to List** on any recipe card.")
+            else:
+                for i, item in enumerate(items):
+                    checked = item.get("checked", False)
+                    ing = item.get("ingredient", "")
+                    qty = item.get("qty", "")
+                    rec = item.get("recipe", "")
+                    lbl = f"{'~~' if checked else ''}{qty} {ing}{'~~' if checked else ''}" + (f" *({rec})*" if rec else "")
+                    new_checked = st.checkbox(lbl, value=checked, key=f"sl_cb_{i}")
+                    if new_checked != checked:
+                        _sl.toggle(i)
+                        st.rerun()
+
+                st.divider()
+                c1, c2 = st.columns(2)
+                with c1:
+                    if st.button("Remove checked", use_container_width=True, key="sl_rm"):
+                        _sl.remove_checked()
+                        st.rerun()
+                with c2:
+                    if st.button("Clear all", use_container_width=True, key="sl_clear"):
+                        _sl.clear_all()
+                        st.rerun()
+
+                txt = _sl.as_text()
+                if txt:
+                    st.download_button(
+                        "Download list", data=txt, file_name="shopping_list.txt",
+                        mime="text/plain", use_container_width=True, key="sl_dl",
+                    )
+
+
 # ---------------------------------------------------------------------------
 # Header
 # ---------------------------------------------------------------------------
@@ -662,6 +741,119 @@ def _make_thumb_html(img_url: str | None, gradient: str, name: str) -> str:
     )
 
 
+@st.dialog("Cook Mode", width="large")
+def _cook_mode_dialog(recipe):
+    """Step-by-step guided cooking dialog with timer hints."""
+    import re as _re
+    steps = recipe.instructions
+    n = len(steps)
+    step_key = f"_cook_{recipe.id}_step"
+    if step_key not in st.session_state:
+        st.session_state[step_key] = 0
+    idx = st.session_state[step_key]
+
+    st.markdown(f"#### {_safe_html(recipe.name)}")
+    st.progress((idx + 1) / n, text=f"Step {idx + 1} of {n}")
+
+    st.markdown(
+        f'<div style="background:var(--t-tag-bg,#fff8f0);border-radius:12px;'
+        f'padding:1.2rem 1.5rem;border-left:5px solid var(--t-primary,#ff9933);'
+        f'margin:.8rem 0;font-size:1.05rem;line-height:1.85;">'
+        f'{_safe_html(steps[idx])}</div>',
+        unsafe_allow_html=True,
+    )
+
+    timer_m = _re.findall(r"(\d+)\s*(minute|min|hour|hr)s?", steps[idx], _re.IGNORECASE)
+    if timer_m:
+        hints = ", ".join(
+            f"{amt} {'hour' if u.lower().startswith('h') else 'min'}{'s' if int(amt) != 1 else ''}"
+            for amt, u in timer_m
+        )
+        st.caption(f"⏱  Timer hint: {hints}")
+
+    st.divider()
+    nav_l, nav_r, nav_exit = st.columns([2, 2, 1])
+    with nav_l:
+        if st.button("← Previous", disabled=(idx == 0), use_container_width=True,
+                     key=f"_cook_prev_{recipe.id}"):
+            st.session_state[step_key] = idx - 1
+            st.rerun()
+    with nav_r:
+        if idx < n - 1:
+            if st.button("Next Step →", type="primary", use_container_width=True,
+                         key=f"_cook_next_{recipe.id}"):
+                st.session_state[step_key] = idx + 1
+                st.rerun()
+        else:
+            st.success("All steps complete — enjoy your meal!")
+    with nav_exit:
+        if st.button("✕ Exit", use_container_width=True, key=f"_cook_exit_{recipe.id}"):
+            st.session_state[step_key] = 0
+            st.rerun(scope="app")
+
+
+def _recipe_actions(recipe, key_suffix: str):
+    """
+    Renders star, scale, shopping list, and Cook Mode actions
+    inside any recipe expander — call after the cookbook HTML block.
+    """
+    st.divider()
+
+    # ── Serving scale ─────────────────────────────────────────────────────────
+    orig = recipe.servings
+    sc_col, srv_col = st.columns([4, 1])
+    with sc_col:
+        scale = st.select_slider(
+            "Scale recipe",
+            options=[0.5, 1.0, 1.5, 2.0, 3.0, 4.0],
+            value=1.0,
+            format_func=lambda x: f"×{x:.1g}",
+            key=f"_scale_{recipe.id}_{key_suffix}",
+        )
+    with srv_col:
+        scaled_srv = orig * scale
+        st.metric("Serves", int(scaled_srv) if scaled_srv == int(scaled_srv) else f"{scaled_srv:.1f}")
+
+    if scale != 1.0:
+        rows = "".join(
+            f'<div class="cb-ing-row">'
+            f'<span class="cb-ing-name">{_safe_html(ing)}</span>'
+            f'<span class="cb-ing-qty">{_safe_html(_scale_qty(qty, scale))}</span>'
+            f'</div>'
+            for ing, qty in recipe.ingredient_quantities.items()
+        )
+        st.markdown(
+            f'<div class="cb-section" style="margin-top:.4rem;">'
+            f'<div class="cb-section-title" style="font-size:.75rem;">Scaled ingredients</div>'
+            f'<div class="cb-ingredients">{rows}</div></div>',
+            unsafe_allow_html=True,
+        )
+
+    # ── Action buttons ────────────────────────────────────────────────────────
+    is_fav = _fav.is_favourite(recipe.id)
+    b1, b2, b3 = st.columns(3)
+    with b1:
+        if st.button(
+            "★ Saved" if is_fav else "☆ Save",
+            key=f"_fav_{recipe.id}_{key_suffix}",
+            use_container_width=True,
+        ):
+            _fav.toggle(recipe.id)
+            st.rerun()
+    with b2:
+        if st.button("🛒 Add to List", key=f"_sl_{recipe.id}_{key_suffix}", use_container_width=True):
+            new_items = [
+                {"ingredient": ing, "qty": _scale_qty(qty, scale), "recipe": recipe.name}
+                for ing, qty in recipe.ingredient_quantities.items()
+            ]
+            added = _sl.add_items(new_items)
+            st.success(f"Added {len(recipe.ingredient_quantities)} ingredients to your shopping list!")
+    with b3:
+        if st.button("▶ Cook Mode", type="primary", key=f"_cook_{recipe.id}_{key_suffix}",
+                     use_container_width=True):
+            _cook_mode_dialog(recipe)
+
+
 def _recipe_card(rec, rank: int):
     r = rec.recipe
     badge   = RANK_BADGES[rank]
@@ -779,6 +971,7 @@ def _recipe_card(rec, rank: int):
           </div>
           {tip_block}
         </div>""", unsafe_allow_html=True)
+        _recipe_actions(r, f"find{rank}")
 
 
 def _simple_recipe_card(retrieved_recipe, idx: int):
@@ -852,6 +1045,7 @@ def _simple_recipe_card(retrieved_recipe, idx: int):
             f'{tip_block}</div>',
             unsafe_allow_html=True,
         )
+        _recipe_actions(r, f"more{idx}")
 
 
 def render_find_tab():
@@ -929,11 +1123,10 @@ def render_find_tab():
 
 def _init_form_state():
     defaults = {
-        "form_ings":        [{"name": "", "qty": ""}],
-        "form_steps":       [""],
-        "add_success":      None,
-        "cropped_img_bytes": None,  # final JPEG bytes after crop
-        "upload_key":       0,      # bumped on reset to clear the uploader widget
+        "form_ings":         [{"name": "", "qty": ""}],
+        "form_steps":        [""],
+        "add_success":       None,
+        "cropped_img_bytes": None,
     }
     for k, v in defaults.items():
         if k not in st.session_state:
@@ -949,48 +1142,45 @@ def _apply_photo_edits(
     aspect: str,
     offset_x: int,
     offset_y: int,
+    brightness: float = 1.0,
+    contrast: float = 1.0,
 ) -> Image.Image:
-    """Apply rotate / zoom / flip / crop to a PIL Image and return the result."""
-    from PIL import ImageOps
+    """Apply rotate / zoom / flip / brightness / contrast / crop to a PIL Image."""
+    from PIL import ImageOps, ImageEnhance
 
-    # 1. Rotate — positive slider value = clockwise
     if rotate != 0:
         img = img.rotate(-rotate, expand=True, resample=Image.Resampling.BICUBIC,
                          fillcolor=(255, 255, 255))
-
-    # 2. Flip
     if flip_h:
         img = ImageOps.mirror(img)
     if flip_v:
         img = ImageOps.flip(img)
 
-    # 3. Zoom crop with position offset
     zoom_f = zoom / 100.0
     w, h = img.size
     crop_w = max(1, int(w / zoom_f))
     crop_h = max(1, int(h / zoom_f))
-    max_left = w - crop_w
-    max_top  = h - crop_h
-    left = int(max_left * offset_x / 100)
-    top  = int(max_top  * offset_y / 100)
+    left = int((w - crop_w) * offset_x / 100)
+    top  = int((h - crop_h) * offset_y / 100)
     img = img.crop((left, top, left + crop_w, top + crop_h))
 
-    # 4. Aspect ratio crop (centered within the zoom crop)
     ratio_map = {"4:3": 4 / 3, "16:9": 16 / 9, "1:1": 1.0, "3:4 Portrait": 3 / 4}
     if aspect in ratio_map:
         target_ratio = ratio_map[aspect]
         w, h = img.size
-        current_ratio = w / h
-        if current_ratio > target_ratio:
-            new_w = int(h * target_ratio)
-            margin = (w - new_w) // 2
-            img = img.crop((margin, 0, margin + new_w, h))
-        elif current_ratio < target_ratio:
-            new_h = int(w / target_ratio)
-            margin = (h - new_h) // 2
-            img = img.crop((0, margin, w, margin + new_h))
+        cur = w / h
+        if cur > target_ratio:
+            nw = int(h * target_ratio)
+            img = img.crop(((w - nw) // 2, 0, (w - nw) // 2 + nw, h))
+        elif cur < target_ratio:
+            nh = int(w / target_ratio)
+            img = img.crop((0, (h - nh) // 2, w, (h - nh) // 2 + nh))
 
-    # 5. Cap longest side at 800 px for preview / storage
+    if brightness != 1.0:
+        img = ImageEnhance.Brightness(img).enhance(brightness)
+    if contrast != 1.0:
+        img = ImageEnhance.Contrast(img).enhance(contrast)
+
     w, h = img.size
     if max(w, h) > 800:
         scale = 800 / max(w, h)
@@ -999,122 +1189,159 @@ def _apply_photo_edits(
     return img
 
 
-@st.dialog("Edit Your Photo", width="large")
-def _crop_dialog(img_bytes: bytes, target_key: str):
-    """PIL-based image editor modal — rotate, zoom, flip, aspect ratio, pan."""
-    pk = f"_ed_{target_key}"
-
-    # Seed defaults the first time this dialog opens
-    if f"{pk}_init" not in st.session_state:
-        st.session_state[f"{pk}_rot"]    = 0
-        st.session_state[f"{pk}_zoom"]   = 100
-        st.session_state[f"{pk}_fh"]     = False
-        st.session_state[f"{pk}_fv"]     = False
-        st.session_state[f"{pk}_aspect"] = "4:3"
-        st.session_state[f"{pk}_ox"]     = 50
-        st.session_state[f"{pk}_oy"]     = 50
-        st.session_state[f"{pk}_init"]   = True
-
-    orig = Image.open(io.BytesIO(img_bytes)).convert("RGB")
-
-    ctrl, prev = st.columns([2, 3])
-
-    with ctrl:
-        st.caption("Transform")
-        rotate = st.slider("Rotate °",  -180, 180, step=1, key=f"{pk}_rot")
-        zoom   = st.slider("Zoom %",      50, 300, step=5, key=f"{pk}_zoom")
-        aspect = st.selectbox(
-            "Aspect Ratio",
-            ["4:3", "16:9", "1:1", "3:4 Portrait", "Free"],
-            key=f"{pk}_aspect",
-        )
-        fc1, fc2 = st.columns(2)
-        with fc1:
-            flip_h = st.checkbox("Flip H", key=f"{pk}_fh")
-        with fc2:
-            flip_v = st.checkbox("Flip V", key=f"{pk}_fv")
-        st.caption("Pan (move crop window when zoomed in)")
-        ox = st.slider("Horizontal", 0, 100, step=1, key=f"{pk}_ox",
-                       help="Shift crop window left / right")
-        oy = st.slider("Vertical",   0, 100, step=1, key=f"{pk}_oy",
-                       help="Shift crop window up / down")
-        if st.button("Reset all", key=f"{pk}_reset", use_container_width=True):
-            for sfx in ("rot", "zoom", "fh", "fv", "aspect", "ox", "oy", "init"):
-                st.session_state.pop(f"{pk}_{sfx}", None)
-            st.rerun(scope="fragment")  # stay in dialog, re-seed defaults
-
-    with prev:
-        result = _apply_photo_edits(orig, rotate, zoom, flip_h, flip_v, aspect, ox, oy)
-        rw, rh = result.size
-        st.image(result, caption=f"Preview — {rw} × {rh} px", use_container_width=True)
-
-    st.divider()
-    save_col, dl_col, cancel_col = st.columns(3)
-
-    def _cleanup():
-        for sfx in ("rot", "zoom", "fh", "fv", "aspect", "ox", "oy", "init"):
-            st.session_state.pop(f"{pk}_{sfx}", None)
-
-    # Build JPEG once for both action buttons
-    _buf = io.BytesIO()
-    result.save(_buf, format="JPEG", quality=88)
-    _jpg = _buf.getvalue()
-
-    with save_col:
-        if st.button("Save to Recipe", type="primary", use_container_width=True):
-            st.session_state[target_key] = _jpg
-            _cleanup()
-            st.rerun(scope="app")  # close dialog, commit to main app
-    with dl_col:
-        st.download_button(
-            "Download image",
-            data=_jpg,
-            file_name="recipe_photo.jpg",
-            mime="image/jpeg",
-            use_container_width=True,
-        )
-    with cancel_col:
-        if st.button("Cancel", use_container_width=True):
-            _cleanup()
-            st.rerun(scope="app")  # close dialog without saving
+@st.cache_data(max_entries=8)
+def _render_edited_preview(
+    img_bytes: bytes,
+    rotate: int, zoom: int,
+    flip_h: bool, flip_v: bool,
+    aspect: str,
+    ox: int, oy: int,
+    bright_pct: int, contrast_pct: int,
+) -> bytes:
+    """Cached PIL render — avoids re-computing on every rerun when params unchanged."""
+    img = Image.open(io.BytesIO(img_bytes)).convert("RGB")
+    result = _apply_photo_edits(
+        img, rotate, zoom, flip_h, flip_v, aspect, ox, oy,
+        bright_pct / 100, contrast_pct / 100,
+    )
+    buf = io.BytesIO()
+    result.save(buf, format="JPEG", quality=88)
+    return buf.getvalue()
 
 
-def _image_uploader_section():
-    """Upload button → modal crop dialog → preview. Returns (bytes | None, suffix)."""
-    st.markdown("**Recipe Photo** *(optional)*")
+def _inline_editor(ns: str, img_bytes: bytes, target_key: str):
+    """Inline image editor (no dialog) — rotate, zoom, flip, brightness, contrast, pan."""
+    ik = f"_ime_{ns}"
 
-    if st.session_state.cropped_img_bytes:
-        st.image(st.session_state.cropped_img_bytes, caption="Photo ready", use_container_width=True)
-        col_re, col_rm = st.columns(2)
-        with col_re:
-            uploaded = st.file_uploader(
-                "Replace", type=["jpg", "jpeg", "png", "webp"],
-                key=f"img_upload_{st.session_state.upload_key}",
-                label_visibility="collapsed",
+    if f"{ik}_init" not in st.session_state:
+        st.session_state[f"{ik}_rot"]      = 0
+        st.session_state[f"{ik}_zoom"]     = 100
+        st.session_state[f"{ik}_fh"]       = False
+        st.session_state[f"{ik}_fv"]       = False
+        st.session_state[f"{ik}_aspect"]   = "4:3"
+        st.session_state[f"{ik}_ox"]       = 50
+        st.session_state[f"{ik}_oy"]       = 50
+        st.session_state[f"{ik}_bright"]   = 100
+        st.session_state[f"{ik}_contrast"] = 100
+        st.session_state[f"{ik}_init"]     = True
+
+    with st.container(border=True):
+        st.caption("Photo Editor — adjust sliders, then click **Save to Recipe**")
+        ctrl, prev = st.columns([2, 3])
+
+        with ctrl:
+            st.caption("Transform")
+            rotate     = st.slider("Rotate °",    -180, 180, step=1,  key=f"{ik}_rot")
+            zoom       = st.slider("Zoom %",        50, 300, step=5,   key=f"{ik}_zoom")
+            aspect     = st.selectbox(
+                "Aspect Ratio",
+                ["4:3", "16:9", "1:1", "3:4 Portrait", "Free"],
+                key=f"{ik}_aspect",
             )
-            if uploaded:
-                st.session_state._add_pending = uploaded.read()
-                st.session_state.upload_key += 1
-                _crop_dialog(st.session_state._add_pending, "cropped_img_bytes")
-        with col_rm:
-            if st.button("Remove photo", key="rm_photo"):
-                st.session_state.cropped_img_bytes = None
-                st.rerun()
-    else:
-        uploaded = st.file_uploader(
-            "Upload a photo",
-            type=["jpg", "jpeg", "png", "webp"],
-            key=f"img_upload_{st.session_state.upload_key}",
-            label_visibility="collapsed",
-        )
-        if uploaded:
-            raw = uploaded.read()
-            if st.button("Crop & Preview", type="secondary", key="open_crop"):
-                _crop_dialog(raw, "cropped_img_bytes")
-        else:
-            st.caption("Upload a JPG, PNG or WebP — you'll crop it before saving.")
+            fc1, fc2 = st.columns(2)
+            with fc1:
+                flip_h = st.checkbox("Flip H", key=f"{ik}_fh")
+            with fc2:
+                flip_v = st.checkbox("Flip V", key=f"{ik}_fv")
+            st.caption("Adjust")
+            bright_pct   = st.slider("Brightness %",  50, 150, step=5, key=f"{ik}_bright")
+            contrast_pct = st.slider("Contrast %",    50, 150, step=5, key=f"{ik}_contrast")
+            st.caption("Pan (when zoomed in)")
+            ox = st.slider("Horizontal", 0, 100, step=1, key=f"{ik}_ox")
+            oy = st.slider("Vertical",   0, 100, step=1, key=f"{ik}_oy")
 
-    return st.session_state.cropped_img_bytes, ".jpg"
+        with prev:
+            result_bytes = _render_edited_preview(
+                img_bytes, rotate, zoom, flip_h, flip_v, aspect,
+                ox, oy, bright_pct, contrast_pct,
+            )
+            st.image(result_bytes, use_container_width=True)
+
+        def _clear_editor():
+            prefix = f"_ime_{ns}_"
+            old_ukey = st.session_state.get(f"{prefix}ukey", 0)
+            for k in [k for k in list(st.session_state.keys()) if k.startswith(prefix)]:
+                del st.session_state[k]
+            st.session_state[f"{prefix}ukey"] = old_ukey + 1
+
+        st.divider()
+        b1, b2, b3, b4 = st.columns([3, 2, 2, 2])
+        with b1:
+            if st.button("Save to Recipe", type="primary",
+                         key=f"{ik}_save", use_container_width=True):
+                st.session_state[target_key] = result_bytes
+                _clear_editor()
+                st.rerun()
+        with b2:
+            st.download_button(
+                "Download", data=result_bytes,
+                file_name="recipe_photo.jpg", mime="image/jpeg",
+                key=f"{ik}_dl", use_container_width=True,
+            )
+        with b3:
+            if st.button("Reset", key=f"{ik}_reset", use_container_width=True):
+                for sfx in ("rot","zoom","fh","fv","aspect","ox","oy","bright","contrast","init"):
+                    st.session_state.pop(f"{ik}_{sfx}", None)
+                st.rerun()
+        with b4:
+            if st.button("Cancel", key=f"{ik}_cancel", use_container_width=True):
+                _clear_editor()
+                st.rerun()
+
+
+def _image_editor_section(
+    ns: str,
+    target_key: str,
+    existing_url: str | None = None,
+    label: str = "Recipe Photo",
+):
+    """
+    Complete upload + inline-edit section. No dialogs — plain session state.
+    ns: unique namespace string ("add" or "edit") to isolate widget keys.
+    target_key: session_state key that stores the final saved JPEG bytes.
+    existing_url: current image URL to show before any upload (admin editor).
+    """
+    st.markdown(f"**{label}** *(optional)*")
+
+    ik       = f"_ime_{ns}"
+    editing  = st.session_state.get(f"{ik}_editing", False)
+    raw_key  = f"{ik}_raw"
+    ukey     = st.session_state.get(f"{ik}_ukey", 0)
+    saved    = st.session_state.get(target_key)
+
+    if saved and not editing:
+        st.image(saved, caption="Photo saved", use_container_width=True)
+        c1, c2 = st.columns(2)
+        with c1:
+            if st.button("Edit photo", key=f"{ik}_reedit", use_container_width=True):
+                st.session_state[raw_key]        = saved
+                st.session_state[f"{ik}_editing"] = True
+                st.rerun()
+        with c2:
+            if st.button("Remove", key=f"{ik}_remove", use_container_width=True):
+                st.session_state[target_key] = None
+                st.rerun()
+
+    elif not editing:
+        if existing_url:
+            st.image(existing_url, caption="Current image", use_container_width=True)
+        up = st.file_uploader(
+            "Replace photo" if existing_url else "Upload a photo",
+            type=["jpg", "jpeg", "png", "webp"],
+            key=f"{ik}_ul_{ukey}", label_visibility="collapsed",
+        )
+        if up:
+            st.session_state[raw_key] = up.read()
+            if st.button("Edit & Preview", type="secondary", key=f"{ik}_openeditor"):
+                st.session_state[f"{ik}_editing"] = True
+                st.rerun()
+        elif not existing_url:
+            st.caption("Upload a JPG, PNG or WebP — edit and crop before saving.")
+
+    if editing and raw_key in st.session_state:
+        _inline_editor(ns, st.session_state[raw_key], target_key)
+
+    return st.session_state.get(target_key), ".jpg"
 
 
 def render_add_tab():
@@ -1135,7 +1362,7 @@ def render_add_tab():
     meta_col, photo_col = st.columns([3, 2])
 
     with photo_col:
-        cropped_bytes, img_suffix = _image_uploader_section()
+        cropped_bytes, img_suffix = _image_editor_section("add", "cropped_img_bytes")
 
     with meta_col:
         col1, col2 = st.columns(2)
@@ -1245,7 +1472,9 @@ def render_add_tab():
             st.session_state.form_ings        = [{"name": "", "qty": ""}]
             st.session_state.form_steps       = [""]
             st.session_state.cropped_img_bytes = None
-            st.session_state.upload_key       += 1
+            # Clear image editor state
+            for _k in [_k for _k in list(st.session_state.keys()) if _k.startswith("_ime_add_")]:
+                del st.session_state[_k]
             st.session_state.add_success      = f"'{recipe.name}' saved and added to recommendations!"
             st.rerun()
 
@@ -1257,59 +1486,17 @@ def render_add_tab():
 def _init_edit_state(recipe):
     """Seed edit session state from a recipe — resets when recipe changes."""
     if st.session_state.get("edit_recipe_id") == recipe.id:
-        return  # already seeded for this recipe
-    st.session_state["edit_recipe_id"]      = recipe.id
-    st.session_state["edit_ings"]           = [
+        return
+    st.session_state["edit_recipe_id"]     = recipe.id
+    st.session_state["edit_ings"]          = [
         {"name": k, "qty": v} for k, v in recipe.ingredient_quantities.items()
     ] or [{"name": "", "qty": ""}]
-    st.session_state["edit_steps"]          = list(recipe.instructions) or [""]
-    st.session_state["edit_cropped_bytes"]  = None
-    st.session_state["edit_upload_key"]     = 0
-    st.session_state["edit_save_msg"]       = None
-
-
-def _edit_image_section(recipe):
-    """Image section for the editor — shows current image, upload triggers modal crop."""
-    st.markdown("**Recipe Photo**")
-    existing_url = _fetch_image(recipe.name, recipe.cuisine, image_path=getattr(recipe, "image_path", None))
-
-    if st.session_state.edit_cropped_bytes:
-        st.image(st.session_state.edit_cropped_bytes, caption="New photo (unsaved)", use_container_width=True)
-        col_re, col_rm = st.columns(2)
-        with col_re:
-            uploaded = st.file_uploader(
-                "Replace", type=["jpg", "jpeg", "png", "webp"],
-                key=f"edit_img_{st.session_state.edit_upload_key}",
-                label_visibility="collapsed",
-            )
-            if uploaded:
-                if st.button("Crop & Preview", key="edit_recrop"):
-                    _crop_dialog(uploaded.read(), "edit_cropped_bytes")
-        with col_rm:
-            if st.button("Remove new photo", key="edit_rm_photo"):
-                st.session_state.edit_cropped_bytes = None
-                st.rerun()
-    elif existing_url:
-        st.image(existing_url, caption="Current image", use_container_width=True)
-        uploaded = st.file_uploader(
-            "Replace photo", type=["jpg", "jpeg", "png", "webp"],
-            key=f"edit_img_{st.session_state.edit_upload_key}",
-            label_visibility="collapsed",
-        )
-        if uploaded:
-            if st.button("Crop & Preview", key="edit_open_crop"):
-                _crop_dialog(uploaded.read(), "edit_cropped_bytes")
-    else:
-        uploaded = st.file_uploader(
-            "Add a photo", type=["jpg", "jpeg", "png", "webp"],
-            key=f"edit_img_{st.session_state.edit_upload_key}",
-            label_visibility="collapsed",
-        )
-        if uploaded:
-            if st.button("Crop & Preview", key="edit_open_crop2"):
-                _crop_dialog(uploaded.read(), "edit_cropped_bytes")
-        else:
-            st.caption("No photo yet — upload one above.")
+    st.session_state["edit_steps"]         = list(recipe.instructions) or [""]
+    st.session_state["edit_cropped_bytes"] = None
+    st.session_state["edit_save_msg"]      = None
+    # Clear any stale editor state from a previous recipe
+    for _k in [_k for _k in list(st.session_state.keys()) if _k.startswith("_ime_edit_")]:
+        del st.session_state[_k]
 
 
 def _render_ai_analysis(chosen):
@@ -1400,7 +1587,8 @@ def _render_edit_form(chosen):
     meta_col, photo_col = st.columns([3, 2])
 
     with photo_col:
-        _edit_image_section(chosen)
+        _existing = _fetch_image(chosen.name, chosen.cuisine, image_path=getattr(chosen, "image_path", None))
+        _image_editor_section("edit", "edit_cropped_bytes", existing_url=_existing)
 
     with meta_col:
         c1, c2 = st.columns(2)
@@ -1490,8 +1678,9 @@ def _render_edit_form(chosen):
         if not errors:
             # Resolve image: new upload > existing path > None
             img_path = getattr(chosen, "image_path", None)
-            if st.session_state.edit_cropped_bytes:
-                img_path = save_user_image(chosen.id, st.session_state.edit_cropped_bytes, ".jpg")
+            _new_img = st.session_state.get("edit_cropped_bytes")
+            if _new_img:
+                img_path = save_user_image(chosen.id, _new_img, ".jpg")
 
             course_val = ed_course if ed_course != "—" else None
             updated = Recipe(
@@ -1514,9 +1703,10 @@ def _render_edit_form(chosen):
             )
             with st.spinner("Saving changes..."):
                 save_user_recipe(updated)
-            # Reset edit state to reflect saved values
-            st.session_state.edit_recipe_id     = None  # forces re-seed on next render
+            st.session_state.edit_recipe_id     = None
             st.session_state.edit_cropped_bytes = None
+            for _k in [_k for _k in list(st.session_state.keys()) if _k.startswith("_ime_edit_")]:
+                del st.session_state[_k]
             st.session_state.edit_save_msg = f"'{updated.name}' saved successfully."
             st.rerun()
 
@@ -1583,6 +1773,19 @@ def render_library_tab():
     st.markdown("All recipes you have added — searchable in recommendations alongside the built-in dataset.")
     st.markdown("---")
 
+    # ── Starred / Saved Recipes section ──────────────────────────────────────
+    fav_ids = _fav.load()
+    if fav_ids:
+        starred = [r for r in cached_base_recipes() + load_user_recipes() if r.id in fav_ids]
+        if starred:
+            st.markdown("### ★ Saved Recipes")
+            st.caption(f"{len(starred)} saved recipe{'s' if len(starred) != 1 else ''} from across your library")
+            cols = st.columns(3)
+            for idx, r in enumerate(starred):
+                with cols[idx % 3]:
+                    _browse_recipe_card(r, idx)
+            st.markdown("---")
+
     user_recipes = load_user_recipes()
 
     if not user_recipes:
@@ -1592,14 +1795,16 @@ def render_library_tab():
         </div>""", unsafe_allow_html=True)
         return
 
+    st.markdown("### My Recipes")
     st.caption(f"{len(user_recipes)} personal recipe{'s' if len(user_recipes) != 1 else ''}")
 
     for recipe in user_recipes:
         total  = recipe.prep_time_minutes + recipe.cook_time_minutes
         thumb  = get_dish_gradient(recipe.cuisine, recipe.name)
         dtags  = " · ".join(recipe.dietary_tags) if recipe.dietary_tags else "No restrictions"
+        star   = "★" if _fav.is_favourite(recipe.id) else "☆"
 
-        with st.expander(f"{recipe.name}  —  {recipe.difficulty.value.capitalize()} · {total} min"):
+        with st.expander(f"{star} {recipe.name}  —  {recipe.difficulty.value.capitalize()} · {total} min"):
             st.markdown(
                 f'<div class="lib-thumb" style="background:{thumb};margin-bottom:.8rem;"></div>',
                 unsafe_allow_html=True,
@@ -1624,6 +1829,9 @@ def render_library_tab():
             if recipe.tips:
                 st.info(recipe.tips)
 
+            _recipe_actions(recipe, f"lib{recipe.id}")
+
+            st.divider()
             if st.button(f"Delete '{recipe.name}'", key=f"del_{recipe.id}"):
                 if delete_user_recipe(recipe.id):
                     st.success(f"Removed '{recipe.name}' from your library.")
@@ -1716,6 +1924,7 @@ def _browse_recipe_card(recipe, idx: int):
             f'{tip_block}</div>',
             unsafe_allow_html=True,
         )
+        _recipe_actions(recipe, f"br{idx}")
 
 
 def render_browse_tab():
@@ -1880,6 +2089,9 @@ def main():
 
     # 1. Theme selector (renders top of sidebar + sets session state)
     _theme_selector()
+
+    # 1b. Shopping list widget — global sidebar, visible on all tabs
+    _sidebar_shopping_list()
 
     # 2. Inject theme CSS variables + override global Streamlit styles
     active = _active_theme()

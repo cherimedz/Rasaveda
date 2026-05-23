@@ -1,0 +1,138 @@
+[
+  {
+    "id": "bas-001",
+    "name": "Homemade Dahi (Curd / Yogurt)",
+    "description": "The simplest and most essential fermented dairy in Indian cooking — full-fat milk cultured with a live starter until thick and tangy. Once you make your own, you'll never buy it again.",
+    "cuisine": "Indian",
+    "course": "Basics",
+    "dietary_tags": ["vegetarian", "gluten-free"],
+    "difficulty": "easy",
+    "prep_time_minutes": 10,
+    "cook_time_minutes": 10,
+    "servings": 8,
+    "ingredients": ["full-fat milk", "curd starter"],
+    "ingredient_quantities": {
+      "full-fat milk": "1 litre",
+      "curd starter": "2 tbsp live curd (from previous batch or store)"
+    },
+    "instructions": [
+      "Heat milk in a heavy-bottomed pan to a full boil, stirring to prevent skin.",
+      "Cool the milk until it is just warm enough to hold a finger in comfortably — 40–45°C. Don't let it go cold.",
+      "Transfer to a ceramic or glass bowl. Add the starter curd; whisk gently to incorporate.",
+      "Cover with a lid or plate. Place in a warm spot: inside an oven with just the light on, or wrapped in a thick towel.",
+      "Do not disturb for 6–8 hours (overnight in summer, 8–10 hours in winter).",
+      "Once set with a firm wobble, refrigerate for at least 2 hours to stop fermentation and firm up further."
+    ],
+    "flavor_profile": ["tangy", "creamy", "fresh", "light"],
+    "tips": "Temperature is everything — too hot and the starter dies, too cold and it won't set. 42°C is ideal. Always save 2 tbsp from each batch to set the next."
+  },
+  {
+    "id": "bas-002",
+    "name": "Homemade Coconut Milk",
+    "description": "Fresh coconut milk extracted from grated coconut yields a richness and flavour unmatched by any can — the essential base for Kerala curries, payasam, and South Asian sweets.",
+    "cuisine": "South Indian",
+    "course": "Basics",
+    "dietary_tags": ["vegan", "gluten-free"],
+    "difficulty": "easy",
+    "prep_time_minutes": 20,
+    "cook_time_minutes": 0,
+    "servings": 4,
+    "ingredients": ["fresh coconut", "warm water"],
+    "ingredient_quantities": {
+      "fresh coconut": "1 medium coconut, grated (about 2 cups)",
+      "warm water": "2 cups for first press + 2 cups for second press"
+    },
+    "instructions": [
+      "Grate the coconut finely using a box grater or food processor.",
+      "First press (thick milk): Add 1 cup warm water to grated coconut. Knead and squeeze with your hands for 2 minutes. Strain through a muslin cloth, pressing hard to extract all liquid. This is thick coconut milk.",
+      "Second press (thin milk): Return the coconut pulp to the bowl. Add 1 cup more warm water. Squeeze again. This thinner milk is used for cooking.",
+      "Repeat the second press with another cup of water for a third, lighter extraction if needed.",
+      "Use fresh coconut milk within 24 hours. Refrigerate or freeze in portions."
+    ],
+    "flavor_profile": ["creamy", "sweet", "aromatic", "fresh"],
+    "tips": "Thick milk is added at the end of cooking (never boiled); thin milk is used to simmer. Don't microwave — it separates. A Preethi coconut scraper or blender attachment speeds up grating considerably."
+  },
+  {
+    "id": "bas-003",
+    "name": "Cashew Cream and Paste",
+    "description": "A versatile dairy-free cream made from soaked and blended raw cashews — the secret behind silky vegan curries, creamy pasta sauces, and glossy Mughlai gravies.",
+    "cuisine": "Indian",
+    "course": "Basics",
+    "dietary_tags": ["vegan", "gluten-free", "dairy-free"],
+    "difficulty": "easy",
+    "prep_time_minutes": 10,
+    "cook_time_minutes": 0,
+    "servings": 8,
+    "ingredients": ["raw cashews", "water"],
+    "ingredient_quantities": {
+      "raw cashews": "1 cup, soaked 2–4 hours (or 20 min in boiling water)",
+      "water": "1/3 cup for paste, 1/2 cup for cream"
+    },
+    "instructions": [
+      "Drain and rinse soaked cashews thoroughly.",
+      "For cashew paste: blend cashews with 1/3 cup water until completely smooth and thick. Stop to scrape down the sides several times. Blend 3–5 minutes for silky result.",
+      "For cashew cream: blend with 1/2 cup water for a pourable consistency similar to single cream.",
+      "Strain through a fine mesh sieve for an ultra-smooth result if using in delicate sauces.",
+      "Store refrigerated up to 5 days, or freeze in ice cube trays."
+    ],
+    "flavor_profile": ["creamy", "rich", "light", "savory"],
+    "tips": "The longer you soak, the creamier the result. A high-powered blender makes a world of difference. Use in place of cream in Mughlai recipes, or as a thickener in gravies."
+  },
+  {
+    "id": "bas-004",
+    "name": "Birista (Crispy Fried Onions)",
+    "description": "Golden, paper-thin fried onion shreds — the essential garnish for biryani, dal, and kebabs that also dissolves into gravies to add sweetness, colour, and depth.",
+    "cuisine": "Indian",
+    "course": "Basics",
+    "dietary_tags": ["vegan", "gluten-free"],
+    "difficulty": "medium",
+    "prep_time_minutes": 15,
+    "cook_time_minutes": 30,
+    "servings": 8,
+    "ingredients": ["large onions", "oil for frying", "salt"],
+    "ingredient_quantities": {
+      "large onions": "4, peeled",
+      "oil for frying": "enough to submerge slices, about 500ml",
+      "salt": "pinch (optional)"
+    },
+    "instructions": [
+      "Slice onions paper-thin using a mandoline or sharp knife. Separate all the rings.",
+      "Optional: spread slices on a tray, sprinkle a pinch of salt, and let sit 10 minutes. Pat very dry with paper towels — moisture is the enemy of crisp.",
+      "Heat oil to 160°C in a wide, deep pan. Add onion slices in batches — don't crowd.",
+      "Fry on medium-low, stirring occasionally, until the sizzling slows and onions turn golden-amber, 15–20 minutes.",
+      "Remove immediately with a slotted spoon (they continue cooking after removal). Spread on paper towels.",
+      "They crisp further as they cool — leave undisturbed for 5 minutes. Store in a dry airtight container up to 2 weeks."
+    ],
+    "flavor_profile": ["sweet", "savory", "rich", "aromatic"],
+    "tips": "Pull the birista out one shade lighter than you want — they always darken slightly after removal. Drying the onions completely beforehand makes them crisp, not greasy."
+  },
+  {
+    "id": "bas-005",
+    "name": "Ginger Garlic Paste",
+    "description": "The fragrant foundation of almost every Indian curry, marinade, and dal — an equal-part blend of fresh ginger and garlic ground into a smooth, pungent paste that keeps for weeks.",
+    "cuisine": "Indian",
+    "course": "Basics",
+    "dietary_tags": ["vegan", "gluten-free"],
+    "difficulty": "easy",
+    "prep_time_minutes": 10,
+    "cook_time_minutes": 0,
+    "servings": 12,
+    "ingredients": ["fresh garlic", "fresh ginger", "salt", "oil"],
+    "ingredient_quantities": {
+      "fresh garlic": "100g, peeled",
+      "fresh ginger": "100g, peeled and roughly chopped",
+      "salt": "1/2 tsp (acts as preservative)",
+      "oil": "1 tbsp (helps preserve and blend)"
+    },
+    "instructions": [
+      "Peel garlic cloves and roughly chop peeled ginger into chunks.",
+      "Blend garlic and ginger together with oil and salt until smooth, scraping down sides as needed.",
+      "Add a tablespoon of water if the blender struggles to move.",
+      "Continue blending until the paste is completely smooth with no fibrous bits.",
+      "Transfer to a clean glass jar. Top with a thin layer of oil to seal.",
+      "Refrigerate and use within 3–4 weeks. Alternatively, freeze in 1-tbsp portions in an ice cube tray."
+    ],
+    "flavor_profile": ["pungent", "aromatic", "savory", "earthy"],
+    "tips": "Equal parts ginger and garlic is the classic ratio. Adding turmeric (1 tsp per batch) makes it an all-purpose curry base ready to go. The salt and oil layer extend shelf life considerably."
+  }
+]
