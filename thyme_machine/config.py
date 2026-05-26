@@ -3,11 +3,11 @@ from pydantic import Field
 
 
 class Settings(BaseSettings):
-    huggingface_token: str = Field(..., description="HuggingFace API token (hf_...)")
-    hf_model: str = Field(
-        default="Qwen/Qwen2.5-7B-Instruct",
-        description="HuggingFace Inference API model for generation",
-    )
+    # --- Ollama settings --------------------------------------------------
+    ollama_model: str = Field(default="rasaveda", description="Ollama model name (run: ollama create rasaveda -f Modelfile)")
+    ollama_base_url: str = Field(default="http://localhost:11434", description="Ollama server URL")
+
+    # --- App settings -----------------------------------------------------
     chroma_persist_dir: str = Field(default="./chroma_db")
     collection_name: str = Field(default="rasaveda_recipes")
     top_k_results: int = Field(default=8)

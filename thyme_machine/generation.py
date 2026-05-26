@@ -1,14 +1,13 @@
 """
-Generation layer: builds a grounded RAG prompt and calls Qwen2.5 via the
-HuggingFace Inference API to produce personalized, explainable recommendations.
+Generation layer: builds a grounded RAG prompt and calls the configured LLM
+(Ollama locally, or HuggingFace Inference API for cloud) to produce
+personalized, explainable recommendations.
 """
 
 import json
 import re
 
-from huggingface_hub import InferenceClient
-
-from thyme_machine.config import settings
+from thyme_machine.llm_client import chat_complete
 from thyme_machine.models import (
     IngredientMatch,
     RecommendationRequest,
@@ -16,6 +15,7 @@ from thyme_machine.models import (
     RecommendedRecipe,
     Recipe,
 )
+from thyme_machine.config import settings
 from thyme_machine.retrieval import RetrievedRecipe
 
 
@@ -206,11 +206,6 @@ def generate_recommendations(
     if not retrieved:
         raise ValueError("No recipes retrieved. Try broadening your search criteria.")
 
-    client = InferenceClient(
-        model=settings.hf_model,
-        token=settings.huggingface_token,
-    )
-
     ingredient_matches = {
         r.recipe.id: _compute_ingredient_match(request.available_ingredients, r.recipe)
         for r in retrieved
@@ -221,14 +216,7 @@ def generate_recommendations(
         {"role": "user", "content": _build_user_prompt(request, retrieved, ingredient_matches)},
     ]
 
-    response = client.chat_completion(
-        messages=messages,
-        max_tokens=2048,
-        temperature=0.25,   # low temp = consistent JSON structure
-        stream=False,
-    )
-
-    raw_text = response.choices[0].message.content
+    raw_text = chat_complete(messages, max_tokens=2048, temperature=0.25)
     parsed = _extract_json(raw_text)
 
     recipe_lookup = {r.recipe.id: r for r in retrieved}

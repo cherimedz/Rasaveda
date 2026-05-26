@@ -1,15 +1,13 @@
 """
 Per-step recipe improvement: analyzes each instruction step and suggests
-technique, timing, and flavor improvements using Qwen2.5 via HuggingFace.
+technique, timing, and flavor improvements using the configured LLM.
 """
 
 import json
 import re
 from dataclasses import dataclass
 
-from huggingface_hub import InferenceClient
-
-from thyme_machine.config import settings
+from thyme_machine.llm_client import chat_complete
 from thyme_machine.models import Recipe
 
 
@@ -47,11 +45,6 @@ def suggest_improvements(recipe: Recipe) -> RecipeImprovement:
     Send all recipe steps to the LLM and get back a structured
     improvement analysis per step.
     """
-    client = InferenceClient(
-        model=settings.hf_model,
-        token=settings.huggingface_token,
-    )
-
     steps_text = "\n".join(
         f"{i + 1}. {step}" for i, step in enumerate(recipe.instructions)
     )
@@ -97,17 +90,14 @@ For Indian recipes, address where relevant: onion caramelization depth, bhunao t
 spice tempering order, dum cooking sealing, hydration of dough, oil separation as doneness indicator,
 yogurt addition technique (to prevent curdling), and salt timing."""
 
-    response = client.chat_completion(
+    raw = chat_complete(
         messages=[
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt},
         ],
         max_tokens=3000,
         temperature=0.25,
-        stream=False,
     )
-
-    raw = response.choices[0].message.content
     parsed = _extract_json(raw)
 
     improvements = [

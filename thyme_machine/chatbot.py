@@ -1,11 +1,9 @@
 """
 Conversational layer — Rasaveda chat mode.
-Uses the same Qwen2.5-7B Inference API with optional RAG context from ChromaDB.
+Uses the configured LLM (Ollama or HuggingFace) with optional RAG context from ChromaDB.
 """
 
-from huggingface_hub import InferenceClient
-
-from thyme_machine.config import settings
+from thyme_machine.llm_client import chat_complete
 
 _SYSTEM = (
     "You are Rasaveda (रसवेद) — a warm, knowledgeable culinary guide specializing in "
@@ -29,8 +27,6 @@ def chat_response(
     history: list of {"role": "user"|"assistant", "content": str} — last N turns
     recipe_context: formatted text block of semantically relevant recipes from ChromaDB
     """
-    client = InferenceClient(model=settings.hf_model, token=settings.huggingface_token)
-
     system_content = _SYSTEM
     if recipe_context:
         system_content += (
@@ -44,13 +40,7 @@ def chat_response(
     messages.append({"role": "user", "content": message})
 
     try:
-        result = client.chat_completion(
-            messages=messages,
-            temperature=0.55,
-            max_tokens=700,
-            stream=False,
-        )
-        return result.choices[0].message.content.strip()
+        return chat_complete(messages, max_tokens=700, temperature=0.55).strip()
     except Exception as e:
         return (
             "I find myself momentarily quiet — the stars of flavor are aligning. "
